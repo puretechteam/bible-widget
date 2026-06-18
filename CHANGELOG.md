@@ -12,7 +12,7 @@
 
 ---
 
-## v1.1.0-testing-deepseek-v4-flash
+## v1.1.0
 
 ### Added
 - **19 Bible translations** (14 languages): Arabic, Chinese (×2), German, Greek, English (×2), Esperanto, Spanish, Finnish (×2), French, Korean, Portuguese (×3), Romanian, Russian, Vietnamese
