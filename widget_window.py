@@ -3,13 +3,14 @@ import os
 import datetime
 from PySide6.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QLabel,
-    QGraphicsDropShadowEffect, QFrame, QSystemTrayIcon, QMenu
+    QFrame, QSystemTrayIcon, QMenu
 )
 from PySide6.QtGui import (
     QFont, QPainter, QColor, QBrush, QPen, QRegion, QPainterPath, QIcon, QPixmap, QAction
 )
 from PySide6.QtCore import Qt, QTimer
-from bible_loader import get_random_passage, get_verse_of_the_day, _load_data
+from bible_loader import get_random_passage, get_verse_of_the_day, _load_data, get_available_translations
+
 
 class BibleWidget(QWidget):
     def __init__(self):
@@ -18,6 +19,7 @@ class BibleWidget(QWidget):
         self._verbose = "--verbose" in sys.argv
         self._start_time = datetime.datetime.now()
         self._quote_count = 0
+        self._translation = None
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.Tool
         )
@@ -34,37 +36,35 @@ class BibleWidget(QWidget):
         self._setup_fonts()
         self._setup_ui()
 
-        # Cache screen reference
         self._screen = QApplication.primaryScreen()
 
-        # Store PID path for clean exit
         self._pid_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget.pid")
 
-        # Setup tray icon
         self._setup_tray()
 
-        # Cache total verse count for stats
         bible = _load_data()
-        self._total_verses = sum(len(c) for book in bible.values() for c in book.values())
+        self._total_verses = sum(
+            len(v) for book in bible.values() for c in book.values() for v in c.values()
+        )
 
-        # Show a verse right away
         self.show_new_verse()
-        # On first render, anchor to center
         QTimer.singleShot(200, self._save_anchor)
 
-        # Timer for refreshing the verse
         self._timer = QTimer()
         self._timer.timeout.connect(self.show_new_verse)
         self._timer.start(3600000)
 
+        # Default to Medium size (20% of screen) after auto-sizing
+        scr = self._screen.geometry()
+        self.resize(int(scr.width() * 0.2), int(scr.height() * 0.2))
+        self._fit_text_size()
+
     def _setup_tray(self):
-        # Create a simple icon programmatically
         pixmap = QPixmap(16, 16)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(QColor(255, 255, 255), 2))
-        # Draw a Latin cross (horizontal beam at first quadsection)
         painter.drawLine(8, 1, 8, 15)
         painter.drawLine(3, 5, 13, 5)
         painter.end()
@@ -73,7 +73,6 @@ class BibleWidget(QWidget):
         self._tray_icon.setIcon(QIcon(pixmap))
         self._tray_icon.setToolTip("Bible Widget")
 
-        # Build menu
         menu = QMenu()
 
         self._hourly_action = QAction("Hourly Mode")
@@ -89,22 +88,52 @@ class BibleWidget(QWidget):
 
         menu.addSeparator()
 
+        # Translation submenu
+        trans_menu = QMenu("Translation")
+        self._translation_group = []
+        all_action = QAction("All (Random)")
+        all_action.setCheckable(True)
+        all_action.setChecked(True)
+        all_action.triggered.connect(lambda: self._set_translation(None))
+        trans_menu.addAction(all_action)
+        self._translation_group.append(all_action)
+        trans_menu.addSeparator()
+
+        for abbr, name, lang in get_available_translations():
+            action = QAction(f"{name} ({lang})")
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked, a=abbr: self._set_translation(a))
+            trans_menu.addAction(action)
+            self._translation_group.append(action)
+
+        menu.addMenu(trans_menu)
+
+        menu.addSeparator()
+
         self._change_action = QAction("Change Quote")
         self._change_action.triggered.connect(self.show_new_verse)
         menu.addAction(self._change_action)
 
         menu.addSeparator()
 
-        self._startup_action = QAction("Run on Startup")
-        self._startup_action.setCheckable(True)
-        startup_path = os.path.join(
-            os.path.expanduser("~"),
-            "AppData", "Roaming", "Microsoft", "Windows",
-            "Start Menu", "Programs", "Startup", "BibleWidget.bat"
-        )
-        self._startup_action.setChecked(os.path.exists(startup_path))
-        self._startup_action.triggered.connect(lambda checked: self._toggle_startup(checked, startup_path))
-        menu.addAction(self._startup_action)
+        startup_menu = QMenu("Run on Startup")
+        self._startup_silent_action = QAction("Silent (no terminal)")
+        self._startup_silent_action.setCheckable(True)
+        self._startup_silent_action.triggered.connect(lambda: self._set_startup("silent"))
+        startup_menu.addAction(self._startup_silent_action)
+
+        self._startup_terminal_action = QAction("With terminal")
+        self._startup_terminal_action.setCheckable(True)
+        self._startup_terminal_action.triggered.connect(lambda: self._set_startup("terminal"))
+        startup_menu.addAction(self._startup_terminal_action)
+
+        sm = self._startup_mode()
+        if sm == "silent":
+            self._startup_silent_action.setChecked(True)
+        elif sm == "terminal":
+            self._startup_terminal_action.setChecked(True)
+
+        menu.addMenu(startup_menu)
 
         menu.addSeparator()
 
@@ -114,6 +143,52 @@ class BibleWidget(QWidget):
 
         self._tray_icon.setContextMenu(menu)
         self._tray_icon.show()
+
+    def _set_translation(self, abbr):
+        self._translation = abbr
+        for i, action in enumerate(self._translation_group):
+            action.setChecked(i == 0 and abbr is None)
+        self.show_new_verse()
+
+    def _startup_dir(self):
+        return os.path.join(
+            os.path.expanduser("~"),
+            "AppData", "Roaming", "Microsoft", "Windows",
+            "Start Menu", "Programs", "Startup"
+        )
+
+    def _startup_file_path(self):
+        return os.path.join(self._startup_dir(), "BibleWidget.vbs")
+
+    def _startup_mode(self):
+        p = self._startup_file_path()
+        if not os.path.exists(p):
+            return None
+        try:
+            with open(p, "r") as f:
+                content = f.read()
+            if "start_widget_no_terminal" in content:
+                return "silent"
+            elif "start_widget" in content:
+                return "terminal"
+        except OSError:
+            pass
+        return None
+
+    def _set_startup(self, mode):
+        p = self._startup_file_path()
+        if mode is None:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
+            return
+        widget_dir = os.path.dirname(os.path.abspath(__file__))
+        launcher = os.path.join(widget_dir, "start_widget_no_terminal.vbs" if mode == "silent" else "start_widget.bat")
+        content = f'CreateObject("Wscript.Shell").Run "pythonw ""{launcher}""", 0, False\n'
+        with open(p, "w") as f:
+            f.write(content)
 
     def _set_mode(self, mode):
         self._mode = mode
@@ -126,21 +201,7 @@ class BibleWidget(QWidget):
             self._timer.start(86400000)
         self.show_new_verse()
 
-    def _toggle_startup(self, checked, startup_path):
-        if checked:
-            vbs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start_widget_no_terminal.vbs")
-            content = '@echo off\nstart "" "' + vbs_path + '"\n'
-            with open(startup_path, "w") as f:
-                f.write(content)
-        else:
-            try:
-                if os.path.exists(startup_path):
-                    os.remove(startup_path)
-            except OSError:
-                pass
-
     def _exit_app(self):
-        # Clean up PID file
         try:
             if os.path.exists(self._pid_path):
                 os.remove(self._pid_path)
@@ -151,7 +212,6 @@ class BibleWidget(QWidget):
     def _setup_fonts(self):
         self.verse_font = QFont("Calibri", 26)
         self.verse_font.setWeight(QFont.Normal)
-
         self.ref_font = QFont("Calibri", 15)
         self.ref_font.setWeight(QFont.DemiBold)
 
@@ -159,43 +219,32 @@ class BibleWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(45, 30, 45, 30)
         layout.setSpacing(12)
+        layout.setAlignment(Qt.AlignCenter)
 
-        # Reference label (above the verse)
         self.ref_label = QLabel()
         self.ref_label.setFont(self.ref_font)
         self.ref_label.setStyleSheet("color: white;")
         self.ref_label.setAlignment(Qt.AlignCenter)
-        self._add_drop_shadow(self.ref_label)
         layout.addWidget(self.ref_label)
 
-        # Dark separator line between reference and verse
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setStyleSheet("background-color: rgba(180, 180, 180, 120);")
         separator.setFixedHeight(1)
         layout.addWidget(separator)
 
-        # Verse text label
         self.verse_label = QLabel()
         self.verse_label.setFont(self.verse_font)
         self.verse_label.setStyleSheet("color: white;")
         self.verse_label.setAlignment(Qt.AlignCenter)
         self.verse_label.setWordWrap(True)
-        self._add_drop_shadow(self.verse_label)
         layout.addWidget(self.verse_label)
-
-    def _add_drop_shadow(self, label):
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(8)
-        shadow.setOffset(2, 2)
-        shadow.setColor(QColor(0, 0, 0, 180))
-        label.setGraphicsEffect(shadow)
 
     def show_new_verse(self):
         if self._mode == "daily":
-            ref, text = get_verse_of_the_day()
+            ref, text = get_verse_of_the_day(self._translation)
         else:
-            ref, text = get_random_passage()
+            ref, text = get_random_passage(self._translation)
         self.ref_label.setText(ref)
         self.verse_label.setText(text)
         self._quote_count += 1
@@ -204,14 +253,12 @@ class BibleWidget(QWidget):
             self._print_stats()
 
     def _print_stats(self):
-        """Print a stats-for-nerds banner to the terminal."""
         now = datetime.datetime.now()
         uptime = now - self._start_time
         total_seconds = int(uptime.total_seconds())
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
 
-        # Calculate next refresh time
         if self._mode == "hourly":
             interval_mins = 60
         else:
@@ -234,18 +281,15 @@ class BibleWidget(QWidget):
         self._anchor_pos = self.frameGeometry().center()
 
     def _fit_text_size(self):
-        """Adjust font size dynamically based on screen size and verse length."""
         if not self._screen:
             return
+
+        self.verse_label.setWordWrap(True)
+        self.ref_label.setWordWrap(True)
+
         screen_height = self._screen.geometry().height()
-
-        # Base font size proportional to screen (about 1/30th of screen height)
         base_size = max(14, min(60, screen_height // 30))
-
-        # Adjust for verse length
         total_len = len(self.verse_label.text()) + len(self.ref_label.text())
-
-        # Scale factor based on total text length
         if total_len > 500:
             size = int(base_size * 0.55)
         elif total_len > 300:
@@ -256,28 +300,36 @@ class BibleWidget(QWidget):
             size = int(base_size * 1.0)
         else:
             size = int(base_size * 1.15)
-
-        # Clamp
         size = max(12, min(72, size))
 
         self.verse_font.setPointSize(size)
         self.verse_label.setFont(self.verse_font)
-
         ref_size = max(10, min(28, size // 2 + 2))
         self.ref_font.setPointSize(ref_size)
         self.ref_label.setFont(self.ref_font)
 
-        # Adjust window size to fit content
-        self.adjustSize()
+        fw = max(50, self.width() - 90)
+        self.verse_label.setFixedWidth(fw)
+        self.ref_label.setFixedWidth(fw)
+        self.verse_label.updateGeometry()
+        self.ref_label.updateGeometry()
+        # Calculate required height from font metrics
+        fm_v = self.verse_label.fontMetrics()
+        fm_r = self.ref_label.fontMetrics()
+        # Use boundingRect with word-wrap width to get actual rect
+        v_rect = fm_v.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
+        r_rect = fm_r.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
+        need_h = v_rect.height() + r_rect.height() + 60 + 12
+        if need_h > self.height():
+            self.resize(self.width(), need_h)
+        self.layout().activate()
 
-        # Reposition to anchored center if set
         if self._anchor_pos is not None:
             new_rect = self.frameGeometry()
             new_rect.moveCenter(self._anchor_pos)
             self.move(new_rect.topLeft())
 
     def resizeEvent(self, event):
-        """Apply rounded corners and refit text on resize."""
         if self._resizing:
             return
         self._resizing = True
@@ -290,11 +342,9 @@ class BibleWidget(QWidget):
         self._resizing = False
 
     def paintEvent(self, event):
-        """Draw the dark glass-morphism backdrop behind the text."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Backdrop extends outward past the text margins for breathing room
         margins = self.layout().contentsMargins()
         rect = self.rect().adjusted(
             margins.left() - 35,
@@ -305,8 +355,6 @@ class BibleWidget(QWidget):
 
         painter.setBrush(self._backdrop_brush)
         painter.setPen(self._no_pen)
-
-        # Rounded rectangle backdrop
         painter.drawRoundedRect(rect, 16, 16)
 
     def mousePressEvent(self, event):
@@ -326,7 +374,6 @@ class BibleWidget(QWidget):
 
 
 def run_widget():
-    # Write PID file for the stop script
     pid_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget.pid")
     with open(pid_path, "w") as f:
         f.write(str(os.getpid()))
