@@ -2,7 +2,7 @@
 
 A transparent desktop widget that displays Bible verses on your screen. It sits on top of everything, stays out of the way, and gives you a new verse every hour (or daily if you prefer).
 
-![screenshot](screenshot.png)
+![screenshot](screenshots/screenshot.png)
 ![translation menu](screenshots/translation-menu-ss.png)
 
 ## Features
