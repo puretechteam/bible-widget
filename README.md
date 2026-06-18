@@ -3,6 +3,7 @@
 A transparent desktop widget that displays Bible verses on your screen. It sits on top of everything, stays out of the way, and gives you a new verse every hour (or daily if you prefer).
 
 ![screenshot](screenshot.png)
+![translation menu](screenshots/translation-menu-ss.png)
 
 ## Features
 
@@ -14,7 +15,8 @@ A transparent desktop widget that displays Bible verses on your screen. It sits 
 - **Hourly mode** — shows a random passage every hour
 - **Daily mode** — shows the same verse all day (changes at midnight)
 - **Change Quote** — instantly get a new verse from the tray menu
-- **Run on Startup** — toggle in the tray menu to auto-launch when you log in
+- **Run on Startup** — toggle in the tray menu to auto-launch when you log in. Survives folder renames — no broken paths.
+- **Translation saves automatically** — your Bible selection is remembered between launches
 - **Stats for Nerds** — double-click `start_widget.bat` to see uptime, verse count, and other stats in a terminal
 - **Works offline** — all Bible data bundled locally, no internet needed after setup
 

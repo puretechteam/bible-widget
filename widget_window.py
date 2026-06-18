@@ -39,8 +39,12 @@ class BibleWidget(QWidget):
         self._screen = QApplication.primaryScreen()
 
         self._pid_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget.pid")
+        self._translation_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "translation.txt")
+
+        self._load_translation_preference()
 
         self._setup_tray()
+        self._repair_startup()
 
         bible = _load_data()
         self._total_verses = sum(
@@ -106,6 +110,17 @@ class BibleWidget(QWidget):
             trans_menu.addAction(action)
             self._translation_group.append(action)
 
+        # Sync menu checkmarks with loaded preference
+        if self._translation is None:
+            self._translation_group[0].setChecked(True)
+        else:
+            for action in self._translation_group:
+                if action.text().startswith(
+                    next((n for a, n, l in get_available_translations() if a == self._translation), "")
+                ):
+                    action.setChecked(True)
+                    break
+
         menu.addMenu(trans_menu)
 
         menu.addSeparator()
@@ -146,6 +161,7 @@ class BibleWidget(QWidget):
 
     def _set_translation(self, abbr):
         self._translation = abbr
+        self._save_translation_preference()
         for i, action in enumerate(self._translation_group):
             action.setChecked(i == 0 and abbr is None)
         self.show_new_verse()
@@ -185,10 +201,61 @@ class BibleWidget(QWidget):
                 pass
             return
         widget_dir = os.path.dirname(os.path.abspath(__file__))
-        launcher = os.path.join(widget_dir, "start_widget_no_terminal.vbs" if mode == "silent" else "start_widget.bat")
-        content = f'CreateObject("Wscript.Shell").Run "pythonw ""{launcher}""", 0, False\n'
+        # Universal .vbs that runs widget_window.py directly
+        # No dependency on any launcher filename — survives renames
+        content = (
+            f'Set sh = CreateObject("Wscript.Shell")\n'
+            f'sh.CurrentDirectory = "{widget_dir}"\n'
+            f'sh.Run "pythonw ""{widget_dir}\\widget_window.py""", 0, False\n'
+        )
         with open(p, "w") as f:
             f.write(content)
+
+    def _load_translation_preference(self):
+        """Restore the last-selected translation from disk."""
+        try:
+            if os.path.isfile(self._translation_path):
+                with open(self._translation_path, "r") as f:
+                    val = f.read().strip()
+                if val:
+                    self._translation = val
+        except OSError:
+            pass
+
+    def _save_translation_preference(self):
+        """Persist the current translation selection to disk."""
+        if self._translation is None:
+            return
+        try:
+            with open(self._translation_path, "w") as f:
+                f.write(self._translation)
+        except OSError:
+            pass
+
+    def _repair_startup(self):
+        """Fix a stale BibleWidget.vbs if the widget folder was moved."""
+        p = self._startup_file_path()
+        if not os.path.isfile(p):
+            return
+        try:
+            with open(p, "r") as f:
+                content = f.read()
+        except OSError:
+            return
+
+        widget_dir = os.path.dirname(os.path.abspath(__file__))
+        expected_silent = os.path.join(widget_dir, "start_widget_no_terminal.vbs")
+        expected_terminal = os.path.join(widget_dir, "start_widget.bat")
+
+        needs_repair = True
+        if expected_silent in content and "start_widget_no_terminal" in content:
+            needs_repair = False
+        elif expected_terminal in content and "start_widget.bat" in content:
+            needs_repair = False
+
+        if needs_repair:
+            mode = "silent" if "start_widget_no_terminal" in content else "terminal"
+            self._set_startup(mode)
 
     def _set_mode(self, mode):
         self._mode = mode

@@ -1,4 +1,18 @@
-## v1.1.0 Changelog
+# Changelog
+
+## v1.1.1
+
+### Fixed
+- **Startup now survives folder renames** — the `BibleWidget.vbs` file no longer hardcodes a launcher filename. It runs `widget_window.py` directly from the current folder location, so renaming the project folder for GitHub won't break startup.
+- **Translation preference persists across restarts** — your selected Bible is saved to `translation.txt` and restored on launch. No more defaulting to "All (Random)" every time.
+- **Tray menu checkmarks reflect saved preference** — the correct translation shows as checked when you open the menu.
+
+### Changed
+- **Startup repair logic** — if an old stale `.vbs` is detected, the widget silently rewrites it with the correct current path on launch.
+
+---
+
+## v1.1.0-testing-deepseek-v4-flash
 
 ### Added
 - **19 Bible translations** (14 languages): Arabic, Chinese (×2), German, Greek, English (×2), Esperanto, Spanish, Finnish (×2), French, Korean, Portuguese (×3), Romanian, Russian, Vietnamese
