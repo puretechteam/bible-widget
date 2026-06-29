@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.2.0
+
+### Added
+- **Prayers submenu** — "The Lord's Prayer" opens a dedicated overlay with Amen button
+- **Menu Language submenu** — 14-language tray menu translation, fully independent from Bible Translation
+- **menu_strings.py** — centralized translation dictionary for all tray menu text
+- **Menu language persistence** — saved to `language.txt` and restored on launch
+- **Change Quote** — moved to the top section (under Daily Mode) for faster access
+- **Lord's Prayer in all 19 translations** — prayers/prayers.json covers every available Bible
+
+### Fixed
+- **Prayer window sizing** — full prayer text now renders without being cut off at the top or bottom
+- **Prayer window layout** — removed alignment that squished labels into a narrow column
+
+### Changed
+- **Menu order** — Translation → Menu Language → Prayers → Run on Startup → Exit
+- **Language and Translation are independent** — you can read the Bible in one language while keeping the tray menu in another
+
+---
+
 ## v1.1.1
 
 ### Fixed
@@ -12,7 +32,7 @@
 
 ---
 
-## v1.1.0
+## v1.1.0-testing-deepseek-v4-flash
 
 ### Added
 - **19 Bible translations** (14 languages): Arabic, Chinese (×2), German, Greek, English (×2), Esperanto, Spanish, Finnish (×2), French, Korean, Portuguese (×3), Romanian, Russian, Vietnamese

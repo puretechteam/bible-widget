@@ -10,6 +10,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtCore import Qt, QTimer
 from bible_loader import get_random_passage, get_verse_of_the_day, _load_data, get_available_translations
+from prayer_window import PrayerWindow
+from menu_strings import get_string, get_available_languages, get_translated_language_name
 
 
 class BibleWidget(QWidget):
@@ -20,6 +22,8 @@ class BibleWidget(QWidget):
         self._start_time = datetime.datetime.now()
         self._quote_count = 0
         self._translation = None
+        self._menu_lang = "en"
+        self._prayer_window = None
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.Tool
         )
@@ -40,8 +44,10 @@ class BibleWidget(QWidget):
 
         self._pid_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget.pid")
         self._translation_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "translation.txt")
+        self._language_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "language.txt")
 
         self._load_translation_preference()
+        self._load_language_preference()
 
         self._setup_tray()
         self._repair_startup()
@@ -63,81 +69,89 @@ class BibleWidget(QWidget):
         self.resize(int(scr.width() * 0.2), int(scr.height() * 0.2))
         self._fit_text_size()
 
-    def _setup_tray(self):
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(255, 255, 255), 2))
-        painter.drawLine(8, 1, 8, 15)
-        painter.drawLine(3, 5, 13, 5)
-        painter.end()
-
-        self._tray_icon = QSystemTrayIcon()
-        self._tray_icon.setIcon(QIcon(pixmap))
-        self._tray_icon.setToolTip("Bible Widget")
-
+    def _build_menu(self):
+        """Build the tray menu with translated strings."""
+        s = lambda key: get_string(key, self._menu_lang)
         menu = QMenu()
 
-        self._hourly_action = QAction("Hourly Mode")
+        self._hourly_action = QAction(s("Hourly Mode"))
         self._hourly_action.setCheckable(True)
-        self._hourly_action.setChecked(True)
+        self._hourly_action.setChecked(self._mode == "hourly")
         self._hourly_action.triggered.connect(lambda: self._set_mode("hourly"))
         menu.addAction(self._hourly_action)
 
-        self._daily_action = QAction("Daily Mode")
+        self._daily_action = QAction(s("Daily Mode"))
         self._daily_action.setCheckable(True)
+        self._daily_action.setChecked(self._mode == "daily")
         self._daily_action.triggered.connect(lambda: self._set_mode("daily"))
         menu.addAction(self._daily_action)
 
-        menu.addSeparator()
-
-        # Translation submenu
-        trans_menu = QMenu("Translation")
-        self._translation_group = []
-        all_action = QAction("All (Random)")
-        all_action.setCheckable(True)
-        all_action.setChecked(True)
-        all_action.triggered.connect(lambda: self._set_translation(None))
-        trans_menu.addAction(all_action)
-        self._translation_group.append(all_action)
-        trans_menu.addSeparator()
-
-        for abbr, name, lang in get_available_translations():
-            action = QAction(f"{name} ({lang})")
-            action.setCheckable(True)
-            action.triggered.connect(lambda checked, a=abbr: self._set_translation(a))
-            trans_menu.addAction(action)
-            self._translation_group.append(action)
-
-        # Sync menu checkmarks with loaded preference
-        if self._translation is None:
-            self._translation_group[0].setChecked(True)
-        else:
-            for action in self._translation_group:
-                if action.text().startswith(
-                    next((n for a, n, l in get_available_translations() if a == self._translation), "")
-                ):
-                    action.setChecked(True)
-                    break
-
-        menu.addMenu(trans_menu)
-
-        menu.addSeparator()
-
-        self._change_action = QAction("Change Quote")
+        self._change_action = QAction(s("Change Quote"))
         self._change_action.triggered.connect(self.show_new_verse)
         menu.addAction(self._change_action)
 
         menu.addSeparator()
 
-        startup_menu = QMenu("Run on Startup")
-        self._startup_silent_action = QAction("Silent (no terminal)")
+        # Translation submenu
+        trans_menu = QMenu(s("Translation"))
+        self._translation_group = []
+        all_action = QAction(s("All (Random)"))
+        all_action.setCheckable(True)
+        all_action.setChecked(self._translation is None)
+        all_action.triggered.connect(lambda: self._set_translation(None))
+        trans_menu.addAction(all_action)
+        self._translation_group.append(all_action)
+        trans_menu.addSeparator()
+
+        translations = get_available_translations()
+        for abbr, name, lang in translations:
+            translated_lang = get_translated_language_name(lang, self._menu_lang)
+            action = QAction(f"{name} ({translated_lang})")
+            action.setCheckable(True)
+            action.triggered.connect(lambda _, a=abbr: self._set_translation(a))
+            trans_menu.addAction(action)
+            self._translation_group.append(action)
+
+        # Sync Translation checkmarks
+        if self._translation is None:
+            self._translation_group[0].setChecked(True)
+        else:
+            for action in self._translation_group:
+                match = next((n for a, n, l in translations if a == self._translation), "")
+                if match and action.text().startswith(match):
+                    action.setChecked(True)
+                    break
+
+        menu.addMenu(trans_menu)
+
+        # Menu Language submenu — changes tray menu text, independent from Translation
+        lang_menu = QMenu(s("Menu Language"))
+        self._lang_actions = []
+        for code, native_name in get_available_languages():
+            display = f"{native_name} ({code})"
+            action = QAction(display)
+            action.setCheckable(True)
+            action.setChecked(code == self._menu_lang)
+            action.triggered.connect(lambda checked, c=code: self._set_language(c))
+            lang_menu.addAction(action)
+            self._lang_actions.append((code, action))
+        menu.addMenu(lang_menu)
+
+        # Prayers submenu
+        prayers_menu = QMenu(s("Prayers"))
+        self._prayer_action = QAction(s("The Lord's Prayer"))
+        self._prayer_action.triggered.connect(self._open_lords_prayer)
+        prayers_menu.addAction(self._prayer_action)
+        menu.addMenu(prayers_menu)
+
+        # Run on Startup submenu
+        startup_menu = QMenu(s("Run on Startup"))
+        self._startup_silent_action = QAction(s("Silent (no terminal)"))
         self._startup_silent_action.setCheckable(True)
         self._startup_silent_action.triggered.connect(lambda: self._set_startup("silent"))
         startup_menu.addAction(self._startup_silent_action)
 
-        self._startup_terminal_action = QAction("With terminal")
+        self._startup_terminal_action = QAction(s("With terminal"))
         self._startup_terminal_action.setCheckable(True)
         self._startup_terminal_action.triggered.connect(lambda: self._set_startup("terminal"))
         startup_menu.addAction(self._startup_terminal_action)
@@ -152,12 +166,34 @@ class BibleWidget(QWidget):
 
         menu.addSeparator()
 
-        self._exit_action = QAction("Exit")
+        self._exit_action = QAction(s("Exit"))
         self._exit_action.triggered.connect(self._exit_app)
         menu.addAction(self._exit_action)
 
-        self._tray_icon.setContextMenu(menu)
+        return menu
+
+    def _setup_tray(self):
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(255, 255, 255), 2))
+        painter.drawLine(8, 1, 8, 15)
+        painter.drawLine(3, 5, 13, 5)
+        painter.end()
+
+        self._tray_icon = QSystemTrayIcon()
+        self._tray_icon.setIcon(QIcon(pixmap))
+        self._tray_icon.setToolTip("Bible Widget")
+
+        self._tray_icon.setContextMenu(self._build_menu())
         self._tray_icon.show()
+
+    def _set_language(self, code):
+        """Change the menu language and rebuild the tray."""
+        self._menu_lang = code
+        self._save_language_preference()
+        self._tray_icon.setContextMenu(self._build_menu())
 
     def _set_translation(self, abbr):
         self._translation = abbr
@@ -201,8 +237,6 @@ class BibleWidget(QWidget):
                 pass
             return
         widget_dir = os.path.dirname(os.path.abspath(__file__))
-        # Universal .vbs that runs widget_window.py directly
-        # No dependency on any launcher filename — survives renames
         content = (
             f'Set sh = CreateObject("Wscript.Shell")\n'
             f'sh.CurrentDirectory = "{widget_dir}"\n'
@@ -212,7 +246,6 @@ class BibleWidget(QWidget):
             f.write(content)
 
     def _load_translation_preference(self):
-        """Restore the last-selected translation from disk."""
         try:
             if os.path.isfile(self._translation_path):
                 with open(self._translation_path, "r") as f:
@@ -223,7 +256,6 @@ class BibleWidget(QWidget):
             pass
 
     def _save_translation_preference(self):
-        """Persist the current translation selection to disk."""
         if self._translation is None:
             return
         try:
@@ -232,8 +264,24 @@ class BibleWidget(QWidget):
         except OSError:
             pass
 
+    def _load_language_preference(self):
+        try:
+            if os.path.isfile(self._language_path):
+                with open(self._language_path, "r") as f:
+                    val = f.read().strip()
+                if val and val in dict(get_available_languages()):
+                    self._menu_lang = val
+        except OSError:
+            pass
+
+    def _save_language_preference(self):
+        try:
+            with open(self._language_path, "w") as f:
+                f.write(self._menu_lang)
+        except OSError:
+            pass
+
     def _repair_startup(self):
-        """Fix a stale BibleWidget.vbs if the widget folder was moved."""
         p = self._startup_file_path()
         if not os.path.isfile(p):
             return
@@ -267,6 +315,14 @@ class BibleWidget(QWidget):
         else:
             self._timer.start(86400000)
         self.show_new_verse()
+
+    def _open_lords_prayer(self):
+        """Open the Lord's Prayer window using the current translation."""
+        abbr = self._translation
+        if abbr is None:
+            abbr = "en_kjv"
+        self._prayer_window = PrayerWindow(abbr)
+        self._prayer_window.show()
 
     def _exit_app(self):
         try:
@@ -342,6 +398,7 @@ class BibleWidget(QWidget):
         print(f"  Uptime:         {hours}h {minutes}m {seconds}s")
         print(f"  Quotes shown:   {self._quote_count}")
         print(f"  Widget size:    {self.width()} x {self.height()}")
+        print(f"  Menu language:  {self._menu_lang}")
         print("---------------------------------------")
 
     def _save_anchor(self):
@@ -380,10 +437,8 @@ class BibleWidget(QWidget):
         self.ref_label.setFixedWidth(fw)
         self.verse_label.updateGeometry()
         self.ref_label.updateGeometry()
-        # Calculate required height from font metrics
         fm_v = self.verse_label.fontMetrics()
         fm_r = self.ref_label.fontMetrics()
-        # Use boundingRect with word-wrap width to get actual rect
         v_rect = fm_v.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
         r_rect = fm_r.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
         need_h = v_rect.height() + r_rect.height() + 60 + 12
