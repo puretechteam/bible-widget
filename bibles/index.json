@@ -43,12 +43,36 @@
         "language": "English",
         "versions": [
             {
+                "name": "American Standard Version",
+                "abbreviation": "en_asv"
+            },
+            {
                 "name": "Basic English",
                 "abbreviation": "en_bbe"
             },
             {
+                "name": "Darby Translation",
+                "abbreviation": "en_darby"
+            },
+            {
+                "name": "Geneva Bible",
+                "abbreviation": "en_geneva"
+            },
+            {
                 "name": "King James Version",
                 "abbreviation": "en_kjv"
+            },
+            {
+                "name": "Webster's Bible",
+                "abbreviation": "en_webster"
+            },
+            {
+                "name": "Wycliffe Bible",
+                "abbreviation": "en_wycliffe"
+            },
+            {
+                "name": "Young's Literal Translation",
+                "abbreviation": "en_ylt"
             }
         ]
     },

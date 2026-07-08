@@ -29,5 +29,5 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo All dependencies are ready! You can now run start_widget.bat or start_widget_no_terminal.vbs
+echo All dependencies are ready! You can now run start_widget.vbs
 pause

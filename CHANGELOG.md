@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.3.0
+
+### Added
+- **6 new Bible translations** — 19 → 25 total. American Standard Version (ASV), Darby Translation, Young's Literal Translation (YLT), Webster's Bible, Geneva Bible, and Wycliffe Bible — all public domain English translations from scrollmapper/bible_databases
+- **6 prayers** — scrollable prayer window now includes: The Lord's Prayer, Jonah's Prayer, Mary's Magnificat, Job's Prayer, Acts 4:24-26, and Solomon's Prayer (1 Kings 8:22-24) — each available in all 25 translations
+- **Prayer navigation** — ◀ and ▶ buttons in the prayer window to cycle between prayers without closing
+- **QScrollArea** — long prayers (e.g. Mary's Magnificat) are now scrollable; non-long prayers display normally
+- **Translated prayer names** — all 6 prayer names translated into all 14 menu languages
+- **Copy Verse tray action** — copies the current reference and text to the clipboard from the tray menu
+- **Stats tray action** — shows uptime, verse count, mode, and next refresh in a popup, removing the need to launch with a terminal
+- **bibles/index.json** — updated with 6 new English translation entries
+
+### Fixed
+- **Window positioning on startup** — the widget now anchors its position before loading the first verse, preventing the window from jumping when verses resize with larger fonts or longer text. It opens at a fixed size in the top-right corner.
+- **Prayer window constant size** — the prayer window no longer resizes itself when switching prayers; it keeps a fixed size and the prayer text scrolls within it via the scroll area
+- **Constant widget size** — the main widget now uses a fixed size in the top-right corner; long verses shrink the font to fit instead of growing the window or moving it
+- **Copy Verse separator** — copied verses now include a "—" separator between the reference and text so they don't run together when pasted
+
+### Changed
+- **prayer_window.py** — completely rewritten: accepts `prayer_id` parameter to select any prayer, added QScrollArea for the text, added prev/next navigation buttons, retains drag and Amen button
+- **widget_window.py** — Prayers submenu now lists all 6 prayers individually instead of just "The Lord's Prayer"
+- **Removed Psalm 51** — dropped the Psalm 51 prayer along with its tray menu entry and all 14 translation strings; 6 prayers remain
+- **menu_strings.py** — added 6 new string keys per language for the additional prayer names
+- **README.md** — updated translation count, prayer features, and file descriptions
+- **Launcher cleanup** — deleted `start_widget.bat` (terminal stats launch is now redundant since Stats live in the tray menu) and renamed `start_widget_no_terminal.vbs` → `start_widget.vbs`. Startup detection now keys off the `pythonw` silent run
+
+---
+
 ## v1.2.0
 
 ### Added

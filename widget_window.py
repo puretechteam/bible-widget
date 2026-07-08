@@ -3,7 +3,7 @@ import os
 import datetime
 from PySide6.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QLabel,
-    QFrame, QSystemTrayIcon, QMenu
+    QFrame, QSystemTrayIcon, QMenu, QMessageBox
 )
 from PySide6.QtGui import (
     QFont, QPainter, QColor, QBrush, QPen, QRegion, QPainterPath, QIcon, QPixmap, QAction
@@ -56,18 +56,22 @@ class BibleWidget(QWidget):
         self._total_verses = sum(
             len(v) for book in bible.values() for c in book.values() for v in c.values()
         )
+        self._book_count = len(bible)
+
+        scr = self._screen.geometry()
+        scr_width = int(scr.width() * 0.2)
+        scr_height = int(scr.height() * 0.3)
+        self.resize(scr_width, scr_height)
+        x = scr.x() + scr.width() - self.width() - 20
+        y = scr.y() + 20
+        self.move(x, y)
+        self._anchor_pos = self.frameGeometry().topLeft()
 
         self.show_new_verse()
-        QTimer.singleShot(200, self._save_anchor)
 
         self._timer = QTimer()
         self._timer.timeout.connect(self.show_new_verse)
         self._timer.start(3600000)
-
-        # Default to Medium size (20% of screen) after auto-sizing
-        scr = self._screen.geometry()
-        self.resize(int(scr.width() * 0.2), int(scr.height() * 0.2))
-        self._fit_text_size()
 
     def _build_menu(self):
         """Build the tray menu with translated strings."""
@@ -89,6 +93,10 @@ class BibleWidget(QWidget):
         self._change_action = QAction(s("Change Quote"))
         self._change_action.triggered.connect(self.show_new_verse)
         menu.addAction(self._change_action)
+
+        self._copy_action = QAction(s("Copy Verse"))
+        self._copy_action.triggered.connect(self._copy_verse)
+        menu.addAction(self._copy_action)
 
         menu.addSeparator()
 
@@ -139,9 +147,21 @@ class BibleWidget(QWidget):
 
         # Prayers submenu
         prayers_menu = QMenu(s("Prayers"))
-        self._prayer_action = QAction(s("The Lord's Prayer"))
-        self._prayer_action.triggered.connect(self._open_lords_prayer)
-        prayers_menu.addAction(self._prayer_action)
+        self._prayer_actions = {}
+        prayer_ids = [
+            ("lords-prayer", "The Lord's Prayer"),
+            ("jonahs-prayer", "Jonah's Prayer"),
+            ("magnificat", "Mary's Magnificat"),
+            ("jobs-prayer", "Job's Prayer"),
+            ("acts-prayer", "Acts 4:24-26"),
+            ("solomons-prayer", "Solomon's Prayer"),
+        ]
+        for pid, pname in prayer_ids:
+            translated = get_string(pname, self._menu_lang)
+            action = QAction(translated)
+            action.triggered.connect(lambda checked, p=pid: self._open_prayer(p))
+            prayers_menu.addAction(action)
+            self._prayer_actions[pid] = action
         menu.addMenu(prayers_menu)
 
         # Run on Startup submenu
@@ -163,6 +183,10 @@ class BibleWidget(QWidget):
             self._startup_terminal_action.setChecked(True)
 
         menu.addMenu(startup_menu)
+
+        self._stats_action = QAction(s("Stats"))
+        self._stats_action.triggered.connect(self._show_stats)
+        menu.addAction(self._stats_action)
 
         menu.addSeparator()
 
@@ -219,10 +243,8 @@ class BibleWidget(QWidget):
         try:
             with open(p, "r") as f:
                 content = f.read()
-            if "start_widget_no_terminal" in content:
+            if "pythonw" in content:
                 return "silent"
-            elif "start_widget" in content:
-                return "terminal"
         except OSError:
             pass
         return None
@@ -292,17 +314,14 @@ class BibleWidget(QWidget):
             return
 
         widget_dir = os.path.dirname(os.path.abspath(__file__))
-        expected_silent = os.path.join(widget_dir, "start_widget_no_terminal.vbs")
-        expected_terminal = os.path.join(widget_dir, "start_widget.bat")
+        expected_launcher = os.path.join(widget_dir, "start_widget.vbs")
 
         needs_repair = True
-        if expected_silent in content and "start_widget_no_terminal" in content:
-            needs_repair = False
-        elif expected_terminal in content and "start_widget.bat" in content:
+        if expected_launcher in content and "widget_window.py" in content:
             needs_repair = False
 
         if needs_repair:
-            mode = "silent" if "start_widget_no_terminal" in content else "terminal"
+            mode = "silent" if "pythonw" in content else "terminal"
             self._set_startup(mode)
 
     def _set_mode(self, mode):
@@ -316,12 +335,12 @@ class BibleWidget(QWidget):
             self._timer.start(86400000)
         self.show_new_verse()
 
-    def _open_lords_prayer(self):
-        """Open the Lord's Prayer window using the current translation."""
+    def _open_prayer(self, prayer_id="lords-prayer"):
+        """Open a prayer window using the current translation."""
         abbr = self._translation
         if abbr is None:
             abbr = "en_kjv"
-        self._prayer_window = PrayerWindow(abbr)
+        self._prayer_window = PrayerWindow(abbr, prayer_id)
         self._prayer_window.show()
 
     def _exit_app(self):
@@ -375,7 +394,7 @@ class BibleWidget(QWidget):
         if self._verbose:
             self._print_stats()
 
-    def _print_stats(self):
+    def _build_stats_text(self):
         now = datetime.datetime.now()
         uptime = now - self._start_time
         total_seconds = int(uptime.total_seconds())
@@ -389,20 +408,40 @@ class BibleWidget(QWidget):
         next_refresh = now + datetime.timedelta(minutes=interval_mins)
         next_time = next_refresh.strftime("%I:%M %p").lstrip("0")
 
+        return (
+            f"Current Quote:  {self.ref_label.text()}\n"
+            f"Mode:           {self._mode.capitalize()}\n"
+            f"Next refresh:   {next_time}\n"
+            f"Verses in DB:   {self._total_verses}\n"
+            f"Books:          {self._book_count}\n"
+            f"Uptime:         {hours}h {minutes}m {seconds}s\n"
+            f"Quotes shown:   {self._quote_count}\n"
+            f"Widget size:    {self.width()} x {self.height()}\n"
+            f"Menu language:  {self._menu_lang}"
+        )
+
+    def _print_stats(self):
         print("--- Bible Widget - Stats for Nerds ---")
-        print(f"  Current Quote:  {self.ref_label.text()}")
-        print(f"  Mode:           {self._mode.capitalize()}")
-        print(f"  Next refresh:   {next_time}")
-        print(f"  Verses in DB:   {self._total_verses}")
-        print(f"  Books:          66")
-        print(f"  Uptime:         {hours}h {minutes}m {seconds}s")
-        print(f"  Quotes shown:   {self._quote_count}")
-        print(f"  Widget size:    {self.width()} x {self.height()}")
-        print(f"  Menu language:  {self._menu_lang}")
+        print(self._build_stats_text())
         print("---------------------------------------")
 
+    def _copy_verse(self):
+        text = f"{self.ref_label.text()} — {self.verse_label.text()}"
+        QApplication.clipboard().setText(text)
+
+    def _show_stats(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Bible Widget — Stats")
+        msg.setIcon(QMessageBox.Information)
+        msg.setFont(QFont("Consolas", 10))
+        label = msg.findChild(QLabel, "qt_msgbox_label")
+        if label is not None:
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        msg.setText(self._build_stats_text())
+        msg.exec()
+
     def _save_anchor(self):
-        self._anchor_pos = self.frameGeometry().center()
+        self._anchor_pos = self.frameGeometry().topLeft()
 
     def _fit_text_size(self):
         if not self._screen:
@@ -437,19 +476,32 @@ class BibleWidget(QWidget):
         self.ref_label.setFixedWidth(fw)
         self.verse_label.updateGeometry()
         self.ref_label.updateGeometry()
+
+        # Shrink the font until the wrapped text fits the constant window
+        # height. The window size never changes — long verses just use a
+        # smaller font instead of growing the widget.
+        available_h = self.height() - 60 - 12
         fm_v = self.verse_label.fontMetrics()
         fm_r = self.ref_label.fontMetrics()
         v_rect = fm_v.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
         r_rect = fm_r.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
         need_h = v_rect.height() + r_rect.height() + 60 + 12
-        if need_h > self.height():
-            self.resize(self.width(), need_h)
+        while need_h > available_h and size > 12:
+            size -= 1
+            self.verse_font.setPointSize(size)
+            self.verse_label.setFont(self.verse_font)
+            ref_size = max(10, min(28, size // 2 + 2))
+            self.ref_font.setPointSize(ref_size)
+            self.ref_label.setFont(self.ref_font)
+            fm_v = self.verse_label.fontMetrics()
+            fm_r = self.ref_label.fontMetrics()
+            v_rect = fm_v.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
+            r_rect = fm_r.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
+            need_h = v_rect.height() + r_rect.height() + 60 + 12
         self.layout().activate()
 
         if self._anchor_pos is not None:
-            new_rect = self.frameGeometry()
-            new_rect.moveCenter(self._anchor_pos)
-            self.move(new_rect.topLeft())
+            self.move(self._anchor_pos)
 
     def resizeEvent(self, event):
         if self._resizing:
