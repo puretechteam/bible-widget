@@ -281,6 +281,17 @@ def get_short_name(translation):
     return _SHORT_NAMES.get(translation, translation.split("_")[-1].upper())
 
 
+def localize_reference(reference, translation):
+    """Show an English reference with the translation's own book name,
+    e.g. 'Matthew 6:9-13' -> 'Mateo 6:9-13' for es_rvr."""
+    book, _, verses = reference.rpartition(" ")
+    canonical = _get_book_names().get("canonical", [])
+    bible = _load_data(translation)
+    if book in canonical and len(bible) == len(canonical):
+        return f"{list(bible)[canonical.index(book)]} {verses}"
+    return reference
+
+
 def get_translation_info(translation):
     """Returns (book_count, verse_count) for one translation."""
     bible = _load_data(translation)

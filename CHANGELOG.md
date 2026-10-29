@@ -23,6 +23,8 @@
 - **Customize Colors never opened**: the dialog class was defined after the app started, so clicking the menu item failed silently (with only a beep). It now opens every time.
 - **Colors keep their transparency**: the color picker has an alpha slider, and partly transparent text and separator colors are respected instead of turning solid.
 - **Prayer window opened blank**: the first prayer now loads straight away instead of only after pressing a navigation arrow. Opening a second prayer no longer closes the first.
+- **Prayer window redesigned**: it now matches the widget's look, with the reference above a clear title, borderless text with comfortable line spacing that no longer runs off the edge, a slim scrollbar only for long prayers, and round arrow buttons around an Amen button. References use the Bible's own book names (e.g. "Mateo 6:9-13"), Arabic prayers are right-aligned, and Esc or the arrow keys close the window or switch prayers.
+- **Jonah's Prayer (KJV)** no longer includes leftover translator footnotes.
 - **Win+D (Show Desktop)**: the widget no longer re-parents itself into the desktop window (which made it jump, shrink, or land off-screen on multi-monitor setups). It now sits at the bottom of the window stack and rises above the desktop whenever the desktop is in focus, including after Win+D.
 - **Dragging between monitors**: the widget no longer snaps back mid-drag. On release it snaps to the nearest corner of the monitor it was dropped on, and that monitor is remembered.
 - **Widget slowly grew wider**: a margin miscalculation added 10 px of width every time the text was refit.

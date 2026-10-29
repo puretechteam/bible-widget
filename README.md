@@ -2,9 +2,15 @@
 
 A transparent desktop widget that displays Bible verses on your screen. It sits on your desktop, stays out of the way, and gives you a new verse every hour (or daily if you prefer). You can drag it anywhere, customize its colors, and it'll snap to the nearest screen corner when you let go.
 
-![screenshot](screenshots/screenshot.png)
-![translation-menu-screenshot](screenshots/translation-menu-ss.png)
-![menu-language-screenshot](screenshots/language-menu-ss.png)
+![The widget on the desktop](screenshots/screenshot.png)
+
+| Pick from 25 translations | Menu in 14 languages |
+|---|---|
+| ![Translation menu](screenshots/translation-menu-ss.png) | ![Menu language menu](screenshots/language-menu-ss.png) |
+
+| Prayers | Custom colors |
+|---|---|
+| ![Prayer window](screenshots/prayer-ss.png) | ![Color settings](screenshots/colors-ss.png) |
 
 ## Features
 

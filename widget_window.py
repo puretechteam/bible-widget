@@ -25,7 +25,7 @@ from bible_loader import (
 )
 from prayer_window import PrayerWindow
 from menu_strings import get_string, get_available_languages, get_translated_language_name
-from colors import get_colors, set_color, DEFAULT_COLORS
+from colors import get_colors, set_color, DEFAULT_COLORS, rgba as _rgba, separator_style as _separator_style
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RANDOM_TRANSLATION = "random"
@@ -56,18 +56,6 @@ if sys.platform == "win32":
     SWP_NOACTIVATE = 0x0010
     SW_SHOWNOACTIVATE = 4
     DESKTOP_CLASSES = ("WorkerW", "Progman")
-
-
-def _rgba(color: QColor) -> str:
-    return f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
-
-
-def _separator_style(color: QColor) -> str:
-    c = _rgba(color)
-    return (
-        f"border: none; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        f"stop:0 transparent, stop:0.3 {c}, stop:0.7 {c}, stop:1 transparent);"
-    )
 
 
 class BibleWidget(QWidget):

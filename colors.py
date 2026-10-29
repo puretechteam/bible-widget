@@ -30,6 +30,20 @@ DEFAULT_COLORS = {
 }
 
 
+def rgba(color):
+    """Stylesheet colour that keeps the alpha channel (QColor.name() drops it)."""
+    return f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
+
+
+def separator_style(color):
+    """Stylesheet for a 1px line that fades out at both ends."""
+    c = rgba(color)
+    return (
+        f"border: none; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        f"stop:0 transparent, stop:0.3 {c}, stop:0.7 {c}, stop:1 transparent);"
+    )
+
+
 def _colors_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "colors.txt")
 
