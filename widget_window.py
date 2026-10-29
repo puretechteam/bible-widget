@@ -1,17 +1,73 @@
 import sys
 import os
+import time
+import getpass
 import datetime
+import logging
+import traceback
+from logging.handlers import RotatingFileHandler
 from PySide6.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QLabel,
-    QFrame, QSystemTrayIcon, QMenu, QMessageBox
+    QFrame, QSystemTrayIcon, QMenu, QMessageBox, QGraphicsDropShadowEffect,
+    QDialog, QDialogButtonBox, QPushButton, QHBoxLayout, QColorDialog
 )
 from PySide6.QtGui import (
-    QFont, QPainter, QColor, QBrush, QPen, QRegion, QPainterPath, QIcon, QPixmap, QAction
+    QFont, QPainter, QColor, QBrush, QPen, QRegion, QPainterPath, QIcon, QPixmap,
+    QAction, QActionGroup, QGuiApplication
 )
-from PySide6.QtCore import Qt, QTimer
-from bible_loader import get_random_passage, get_verse_of_the_day, _load_data, get_available_translations
+from PySide6.QtCore import (
+    Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, Signal, qInstallMessageHandler, QtMsgType
+)
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from bible_loader import (
+    get_random_passage, get_verse_of_the_day, get_available_translations,
+    get_translation_info
+)
 from prayer_window import PrayerWindow
 from menu_strings import get_string, get_available_languages, get_translated_language_name
+from colors import get_colors, set_color, DEFAULT_COLORS
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+RANDOM_TRANSLATION = "random"
+MODE_INTERVALS = {"hourly": 3600000, "random": 900000}  # daily is scheduled for midnight
+
+log = logging.getLogger("bible_widget")
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _user32.SetWindowPos.argtypes = [
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint
+    ]
+    _user32.GetForegroundWindow.restype = wintypes.HWND
+    _user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    _user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    _user32.IsIconic.argtypes = [wintypes.HWND]
+    _user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+
+    HWND_TOPMOST = wintypes.HWND(-1)
+    HWND_NOTOPMOST = wintypes.HWND(-2)
+    HWND_BOTTOM = wintypes.HWND(1)
+    SWP_NOSIZE = 0x0001
+    SWP_NOMOVE = 0x0002
+    SWP_NOACTIVATE = 0x0010
+    SW_SHOWNOACTIVATE = 4
+    DESKTOP_CLASSES = ("WorkerW", "Progman")
+
+
+def _rgba(color: QColor) -> str:
+    return f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
+
+
+def _separator_style(color: QColor) -> str:
+    c = _rgba(color)
+    return (
+        f"border: none; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        f"stop:0 transparent, stop:0.3 {c}, stop:0.7 {c}, stop:1 transparent);"
+    )
 
 
 class BibleWidget(QWidget):
@@ -22,132 +78,145 @@ class BibleWidget(QWidget):
         self._start_time = datetime.datetime.now()
         self._quote_count = 0
         self._translation = None
+        self._shown_translation = ""
         self._menu_lang = "en"
-        self._prayer_window = None
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.Tool
-        )
+        self._prayer_windows = []
+        self._color_dialog = None
+        # Tool: no taskbar button. DoesNotAcceptFocus: clicking it never steals focus
+        # (WS_EX_NOACTIVATE). Not WindowStaysOnBottomHint: Qt would force the window back
+        # to the bottom on every z-order change, so it could never rise after Win+D.
+        # The bottom layer is managed by _set_layer instead.
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
+        if sys.platform != "win32":
+            self.setWindowFlag(Qt.WindowStaysOnBottomHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
 
+        self._on_top = False
+        self._peek_until = 0.0
+        if sys.platform == "win32":
+            # Win+D and clicks on the desktop bring the desktop to the front; while the
+            # desktop is focused the widget is lifted above it, then dropped back down.
+            self._desktop_timer = QTimer(self)
+            self._desktop_timer.timeout.connect(self._watch_desktop)
+            self._desktop_timer.start(400)
+
         self._drag_pos = None
+        self._dragging = False
         self._resizing = False
         self._mode = "hourly"
-        self._anchor_pos = None
-        self._backdrop_brush = QBrush(QColor(0, 0, 0, 130))
+        self._snap_anim = None
+        self._corner_path = os.path.join(APP_DIR, "corner.txt")
+        self._mode_path = os.path.join(APP_DIR, "mode.txt")
+        self._snap_corner = "tr"
+        self._snap_screen_name = ""
+        self._snap_enabled = True
+        self._free_pos = None
+        self._load_snap_corner()
+        self._load_mode()
+
+        self._colors = get_colors()
+        self._backdrop_brush = QBrush(self._colors["backdrop"])
+        self._text_color = self._colors["text"]
+        self._separator_color = self._colors["separator"]
         self._no_pen = QPen(Qt.NoPen)
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(12)
+        shadow.setOffset(0, 2)
+        shadow.setColor(self._colors["shadow"])
+        self.setGraphicsEffect(shadow)
 
         self._setup_fonts()
         self._setup_ui()
 
-        self._screen = QApplication.primaryScreen()
-
-        self._pid_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget.pid")
-        self._translation_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "translation.txt")
-        self._language_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "language.txt")
+        self._pid_path = os.path.join(APP_DIR, "widget.pid")
+        self._translation_path = os.path.join(APP_DIR, "translation.txt")
+        self._language_path = os.path.join(APP_DIR, "language.txt")
 
         self._load_translation_preference()
         self._load_language_preference()
 
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_timer)
+
         self._setup_tray()
         self._repair_startup()
 
-        bible = _load_data()
-        self._total_verses = sum(
-            len(v) for book in bible.values() for c in book.values() for v in c.values()
-        )
-        self._book_count = len(bible)
+        scr = self._screen_for_snap().geometry()
+        self.resize(int(scr.width() * 0.2), int(scr.height() * 0.3))
+        self._place()
 
-        scr = self._screen.geometry()
-        scr_width = int(scr.width() * 0.2)
-        scr_height = int(scr.height() * 0.3)
-        self.resize(scr_width, scr_height)
-        x = scr.x() + scr.width() - self.width() - 20
-        y = scr.y() + 20
-        self.move(x, y)
-        self._anchor_pos = self.frameGeometry().topLeft()
+        app = QApplication.instance()
+        app.screenAdded.connect(lambda _: QTimer.singleShot(1000, self._place))
+        app.screenRemoved.connect(lambda _: QTimer.singleShot(1000, self._place))
 
         self.show_new_verse()
+        self._schedule_next()
 
-        self._timer = QTimer()
-        self._timer.timeout.connect(self.show_new_verse)
-        self._timer.start(3600000)
+    def _s(self, key):
+        return get_string(key, self._menu_lang)
 
     def _build_menu(self):
         """Build the tray menu with translated strings."""
-        s = lambda key: get_string(key, self._menu_lang)
+        s = self._s
         menu = QMenu()
 
-        self._hourly_action = QAction(s("Hourly Mode"))
-        self._hourly_action.setCheckable(True)
-        self._hourly_action.setChecked(self._mode == "hourly")
-        self._hourly_action.triggered.connect(lambda: self._set_mode("hourly"))
-        menu.addAction(self._hourly_action)
+        mode_group = QActionGroup(menu)
+        self._mode_actions = {}
+        for mode, label in (("hourly", "Hourly Mode"), ("daily", "Daily Mode"), ("random", "Random Mode")):
+            action = QAction(s(label), menu)
+            action.setCheckable(True)
+            action.setChecked(self._mode == mode)
+            action.triggered.connect(lambda _, m=mode: self._set_mode(m))
+            mode_group.addAction(action)
+            menu.addAction(action)
+            self._mode_actions[mode] = action
 
-        self._daily_action = QAction(s("Daily Mode"))
-        self._daily_action.setCheckable(True)
-        self._daily_action.setChecked(self._mode == "daily")
-        self._daily_action.triggered.connect(lambda: self._set_mode("daily"))
-        menu.addAction(self._daily_action)
+        change_action = QAction(s("Change Quote"), menu)
+        change_action.triggered.connect(lambda: self.show_new_verse(manual=True))
+        menu.addAction(change_action)
 
-        self._change_action = QAction(s("Change Quote"))
-        self._change_action.triggered.connect(self.show_new_verse)
-        menu.addAction(self._change_action)
-
-        self._copy_action = QAction(s("Copy Verse"))
-        self._copy_action.triggered.connect(self._copy_verse)
-        menu.addAction(self._copy_action)
+        copy_action = QAction(s("Copy Verse"), menu)
+        copy_action.triggered.connect(self._copy_verse)
+        menu.addAction(copy_action)
 
         menu.addSeparator()
 
         # Translation submenu
-        trans_menu = QMenu(s("Translation"))
-        self._translation_group = []
-        all_action = QAction(s("All (Random)"))
+        trans_menu = menu.addMenu(s("Translation"))
+        trans_group = QActionGroup(trans_menu)
+        all_action = QAction(s("All (Random)"), trans_menu)
         all_action.setCheckable(True)
         all_action.setChecked(self._translation is None)
         all_action.triggered.connect(lambda: self._set_translation(None))
+        trans_group.addAction(all_action)
         trans_menu.addAction(all_action)
-        self._translation_group.append(all_action)
         trans_menu.addSeparator()
 
-        translations = get_available_translations()
-        for abbr, name, lang in translations:
+        for abbr, name, lang in get_available_translations():
             translated_lang = get_translated_language_name(lang, self._menu_lang)
-            action = QAction(f"{name} ({translated_lang})")
+            action = QAction(f"{name} ({translated_lang})", trans_menu)
             action.setCheckable(True)
+            action.setChecked(abbr == self._translation)
             action.triggered.connect(lambda _, a=abbr: self._set_translation(a))
+            trans_group.addAction(action)
             trans_menu.addAction(action)
-            self._translation_group.append(action)
 
-        # Sync Translation checkmarks
-        if self._translation is None:
-            self._translation_group[0].setChecked(True)
-        else:
-            for action in self._translation_group:
-                match = next((n for a, n, l in translations if a == self._translation), "")
-                if match and action.text().startswith(match):
-                    action.setChecked(True)
-                    break
-
-        menu.addMenu(trans_menu)
-
-        # Menu Language submenu — changes tray menu text, independent from Translation
-        lang_menu = QMenu(s("Menu Language"))
-        self._lang_actions = []
+        # Menu Language submenu: changes tray menu text, independent from Translation
+        lang_menu = menu.addMenu(s("Menu Language"))
+        lang_group = QActionGroup(lang_menu)
         for code, native_name in get_available_languages():
-            display = f"{native_name} ({code})"
-            action = QAction(display)
+            action = QAction(f"{native_name} ({code})", lang_menu)
             action.setCheckable(True)
             action.setChecked(code == self._menu_lang)
-            action.triggered.connect(lambda checked, c=code: self._set_language(c))
+            action.triggered.connect(lambda _, c=code: self._set_language(c))
+            lang_group.addAction(action)
             lang_menu.addAction(action)
-            self._lang_actions.append((code, action))
-        menu.addMenu(lang_menu)
 
         # Prayers submenu
-        prayers_menu = QMenu(s("Prayers"))
-        self._prayer_actions = {}
+        prayers_menu = menu.addMenu(s("Prayers"))
         prayer_ids = [
             ("lords-prayer", "The Lord's Prayer"),
             ("jonahs-prayer", "Jonah's Prayer"),
@@ -157,139 +226,293 @@ class BibleWidget(QWidget):
             ("solomons-prayer", "Solomon's Prayer"),
         ]
         for pid, pname in prayer_ids:
-            translated = get_string(pname, self._menu_lang)
-            action = QAction(translated)
-            action.triggered.connect(lambda checked, p=pid: self._open_prayer(p))
+            action = QAction(s(pname), prayers_menu)
+            action.triggered.connect(lambda _, p=pid: self._open_prayer(p))
             prayers_menu.addAction(action)
-            self._prayer_actions[pid] = action
-        menu.addMenu(prayers_menu)
 
         # Run on Startup submenu
-        startup_menu = QMenu(s("Run on Startup"))
-        self._startup_silent_action = QAction(s("Silent (no terminal)"))
-        self._startup_silent_action.setCheckable(True)
-        self._startup_silent_action.triggered.connect(lambda: self._set_startup("silent"))
-        startup_menu.addAction(self._startup_silent_action)
+        startup_menu = menu.addMenu(s("Run on Startup"))
+        startup_group = QActionGroup(startup_menu)
+        current = self._startup_mode()
+        for mode, label in ((None, "Off"), ("silent", "Silent (no terminal)"), ("console", "With console")):
+            action = QAction(s(label), startup_menu)
+            action.setCheckable(True)
+            action.setChecked(current == mode)
+            action.triggered.connect(lambda _, m=mode: self._set_startup(m))
+            startup_group.addAction(action)
+            startup_menu.addAction(action)
 
-        self._startup_terminal_action = QAction(s("With terminal"))
-        self._startup_terminal_action.setCheckable(True)
-        self._startup_terminal_action.triggered.connect(lambda: self._set_startup("terminal"))
-        startup_menu.addAction(self._startup_terminal_action)
-
-        sm = self._startup_mode()
-        if sm == "silent":
-            self._startup_silent_action.setChecked(True)
-        elif sm == "terminal":
-            self._startup_terminal_action.setChecked(True)
-
-        menu.addMenu(startup_menu)
-
-        self._stats_action = QAction(s("Stats"))
-        self._stats_action.triggered.connect(self._show_stats)
-        menu.addAction(self._stats_action)
+        stats_action = QAction(s("Stats"), menu)
+        stats_action.triggered.connect(self._show_stats)
+        menu.addAction(stats_action)
 
         menu.addSeparator()
 
-        self._exit_action = QAction(s("Exit"))
-        self._exit_action.triggered.connect(self._exit_app)
-        menu.addAction(self._exit_action)
+        show_action = QAction(s("Show Widget"), menu)
+        show_action.triggered.connect(self._bring_back)
+        menu.addAction(show_action)
+
+        colors_action = QAction(s("Customize Colors..."), menu)
+        colors_action.triggered.connect(self._open_color_settings)
+        menu.addAction(colors_action)
+
+        snap_action = QAction(s("Snap to Corners"), menu)
+        snap_action.setCheckable(True)
+        snap_action.setChecked(self._snap_enabled)
+        snap_action.toggled.connect(self._toggle_snap)
+        menu.addAction(snap_action)
+
+        exit_action = QAction(s("Exit"), menu)
+        exit_action.triggered.connect(self._exit_app)
+        menu.addAction(exit_action)
 
         return menu
 
-    def _setup_tray(self):
+    def _make_tray_pixmap(self):
         pixmap = QPixmap(16, 16)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(255, 255, 255), 2))
+        color = QColor(self._text_color)
+        color.setAlpha(255)
+        painter.setPen(QPen(color, 2))
         painter.drawLine(8, 1, 8, 15)
         painter.drawLine(3, 5, 13, 5)
         painter.end()
+        return pixmap
 
-        self._tray_icon = QSystemTrayIcon()
-        self._tray_icon.setIcon(QIcon(pixmap))
+    def _setup_tray(self):
+        self._tray_icon = QSystemTrayIcon(self)
+        self._tray_icon.setIcon(QIcon(self._make_tray_pixmap()))
         self._tray_icon.setToolTip("Bible Widget")
-
-        self._tray_icon.setContextMenu(self._build_menu())
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._menu = self._build_menu()
+        self._tray_icon.setContextMenu(self._menu)
         self._tray_icon.show()
+
+    def _rebuild_menu(self):
+        old = self._menu
+        self._menu = self._build_menu()
+        self._tray_icon.setContextMenu(self._menu)
+        if old is not None:
+            old.deleteLater()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self._bring_back()
+
+    # ----- Desktop layering (Windows) -----
+
+    def _set_layer(self, on_top):
+        hwnd = int(self.winId())
+        flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        if on_top:
+            _user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+        else:
+            _user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+            _user32.SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, flags)
+        self._on_top = on_top
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if sys.platform == "win32" and not self._on_top:
+            QTimer.singleShot(0, lambda: self._set_layer(False))
+
+    def _watch_desktop(self):
+        if not self.isVisible():
+            return
+        hwnd = int(self.winId())
+        if _user32.IsIconic(hwnd):
+            _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+
+        fg = _user32.GetForegroundWindow()
+        if fg:
+            pid = wintypes.DWORD()
+            _user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+            if pid.value == os.getpid():
+                return  # our own menu or dialog has focus; leave the layer alone
+            buf = ctypes.create_unicode_buffer(64)
+            _user32.GetClassNameW(fg, buf, 64)
+            on_desktop = buf.value in DESKTOP_CLASSES
+        else:
+            on_desktop = False
+        want_top = on_desktop or time.monotonic() < self._peek_until
+        if want_top != self._on_top:
+            self._set_layer(want_top)
+
+    # ----- Menu actions -----
 
     def _set_language(self, code):
         """Change the menu language and rebuild the tray."""
         self._menu_lang = code
         self._save_language_preference()
-        self._tray_icon.setContextMenu(self._build_menu())
+        self._rebuild_menu()
+
+    def _apply_colors(self):
+        self._colors = get_colors()
+        self._backdrop_brush = QBrush(self._colors["backdrop"])
+        self._text_color = self._colors["text"]
+        self._separator_color = self._colors["separator"]
+        self._apply_label_styles()
+
+        shadow = self.graphicsEffect()
+        if isinstance(shadow, QGraphicsDropShadowEffect):
+            shadow.setColor(self._colors["shadow"])
+
+        self._tray_icon.setIcon(QIcon(self._make_tray_pixmap()))
+        self.update()
+
+        for window in self._prayer_windows:
+            window._apply_colors()
+
+    def _apply_label_styles(self):
+        self.ref_label.setStyleSheet(f"color: {_rgba(self._text_color)};")
+        self.verse_label.setStyleSheet(f"color: {_rgba(self._text_color)}; letter-spacing: 0.5px;")
+        for sep in self._separators:
+            sep.setStyleSheet(_separator_style(self._separator_color))
+
+    def _open_color_settings(self):
+        if self._color_dialog is not None and self._color_dialog.isVisible():
+            self._color_dialog.raise_()
+            self._color_dialog.activateWindow()
+            return
+        dlg = ColorSettingsDialog(get_colors(), self._s)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.colors_changed.connect(self._apply_colors)
+        dlg.destroyed.connect(lambda: setattr(self, "_color_dialog", None))
+        dlg.adjustSize()
+        geo = self._screen_for_snap().availableGeometry()
+        dlg.move(geo.center() - dlg.rect().center())
+        self._color_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _bring_back(self):
+        """Show the widget and lift it above other windows for a few seconds."""
+        self.show()
+        if sys.platform == "win32":
+            hwnd = int(self.winId())
+            if _user32.IsIconic(hwnd):
+                _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+            self._peek_until = time.monotonic() + 4
+            self._set_layer(True)
+        else:
+            self.raise_()
+        self._place()
+
+    def _toggle_snap(self, enabled: bool) -> None:
+        self._snap_enabled = enabled
+        if enabled:
+            self._snap_to_corner(self._snap_corner)
+        else:
+            self._free_pos = self.pos()
+        self._save_snap_corner()
 
     def _set_translation(self, abbr):
         self._translation = abbr
         self._save_translation_preference()
-        for i, action in enumerate(self._translation_group):
-            action.setChecked(i == 0 and abbr is None)
-        self.show_new_verse()
+        self.show_new_verse(manual=True)
+
+    # ----- Run on Startup -----
 
     def _startup_dir(self):
-        return os.path.join(
-            os.path.expanduser("~"),
-            "AppData", "Roaming", "Microsoft", "Windows",
-            "Start Menu", "Programs", "Startup"
-        )
+        appdata = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
     def _startup_file_path(self):
         return os.path.join(self._startup_dir(), "BibleWidget.vbs")
 
-    def _startup_mode(self):
+    def _read_startup_file(self):
         p = self._startup_file_path()
-        if not os.path.exists(p):
+        if not os.path.isfile(p):
             return None
         try:
-            with open(p, "r") as f:
-                content = f.read()
-            if "pythonw" in content:
-                return "silent"
+            with open(p, "rb") as f:
+                raw = f.read()
         except OSError:
-            pass
-        return None
+            return None
+        if raw.startswith(b"\xff\xfe"):
+            return raw.decode("utf-16", errors="replace")
+        return raw.decode("mbcs" if sys.platform == "win32" else "latin-1", errors="replace")
+
+    def _startup_mode(self):
+        content = self._read_startup_file()
+        if content is None:
+            return None
+        if "mode=console" in content:
+            return "console"
+        if "mode=silent" in content or "pythonw" in content or "pyw" in content:
+            return "silent"
+        return "console"
+
+    def _startup_content(self, mode):
+        script = os.path.join(APP_DIR, "widget_window.py")
+        if mode == "silent":
+            pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+            exe = f'""{pythonw}""' if os.path.isfile(pythonw) else "pyw -3"
+            cmd = f'{exe} ""{script}""'
+            show = 0
+        else:
+            cmd = f'py -3 ""{script}"" --verbose'
+            show = 1
+        return (
+            f"' Bible Widget startup launcher (mode={mode})\r\n"
+            f'Set sh = CreateObject("Wscript.Shell")\r\n'
+            f'sh.CurrentDirectory = "{APP_DIR}"\r\n'
+            f'sh.Run "{cmd}", {show}, False\r\n'
+        )
 
     def _set_startup(self, mode):
         p = self._startup_file_path()
-        if mode is None:
-            try:
+        try:
+            if mode is None:
                 if os.path.exists(p):
                     os.remove(p)
-            except OSError:
-                pass
+            else:
+                os.makedirs(self._startup_dir(), exist_ok=True)
+                # UTF-16 with BOM so Windows Script Host reads non-ASCII paths correctly
+                with open(p, "w", encoding="utf-16", newline="") as f:
+                    f.write(self._startup_content(mode))
+        except OSError:
+            log.exception("Could not update the startup launcher")
+        self._rebuild_menu()
+
+    def _repair_startup(self):
+        """Rewrite the startup launcher only if it no longer matches this install."""
+        content = self._read_startup_file()
+        if content is None:
             return
-        widget_dir = os.path.dirname(os.path.abspath(__file__))
-        content = (
-            f'Set sh = CreateObject("Wscript.Shell")\n'
-            f'sh.CurrentDirectory = "{widget_dir}"\n'
-            f'sh.Run "pythonw ""{widget_dir}\\widget_window.py""", 0, False\n'
-        )
-        with open(p, "w") as f:
-            f.write(content)
+        mode = self._startup_mode()
+        if content != self._startup_content(mode):
+            log.info("Repairing startup launcher (mode=%s)", mode)
+            self._set_startup(mode)
+
+    # ----- Preferences -----
 
     def _load_translation_preference(self):
         try:
             if os.path.isfile(self._translation_path):
-                with open(self._translation_path, "r") as f:
+                with open(self._translation_path, "r", encoding="utf-8") as f:
                     val = f.read().strip()
-                if val:
+                if val == RANDOM_TRANSLATION:
+                    self._translation = None
+                elif val in {a for a, _, _ in get_available_translations()}:
                     self._translation = val
         except OSError:
             pass
 
     def _save_translation_preference(self):
-        if self._translation is None:
-            return
         try:
-            with open(self._translation_path, "w") as f:
-                f.write(self._translation)
+            with open(self._translation_path, "w", encoding="utf-8") as f:
+                f.write(self._translation or RANDOM_TRANSLATION)
         except OSError:
             pass
 
     def _load_language_preference(self):
         try:
             if os.path.isfile(self._language_path):
-                with open(self._language_path, "r") as f:
+                with open(self._language_path, "r", encoding="utf-8") as f:
                     val = f.read().strip()
                 if val and val in dict(get_available_languages()):
                     self._menu_lang = val
@@ -298,50 +521,61 @@ class BibleWidget(QWidget):
 
     def _save_language_preference(self):
         try:
-            with open(self._language_path, "w") as f:
+            with open(self._language_path, "w", encoding="utf-8") as f:
                 f.write(self._menu_lang)
         except OSError:
             pass
 
-    def _repair_startup(self):
-        p = self._startup_file_path()
-        if not os.path.isfile(p):
-            return
+    def _load_mode(self):
         try:
-            with open(p, "r") as f:
-                content = f.read()
+            if os.path.isfile(self._mode_path):
+                with open(self._mode_path, "r", encoding="utf-8") as f:
+                    val = f.read().strip()
+                if val in ("hourly", "daily", "random"):
+                    self._mode = val
         except OSError:
-            return
+            pass
 
-        widget_dir = os.path.dirname(os.path.abspath(__file__))
-        expected_launcher = os.path.join(widget_dir, "start_widget.vbs")
+    def _save_mode(self):
+        try:
+            with open(self._mode_path, "w", encoding="utf-8") as f:
+                f.write(self._mode)
+        except OSError:
+            pass
 
-        needs_repair = True
-        if expected_launcher in content and "widget_window.py" in content:
-            needs_repair = False
-
-        if needs_repair:
-            mode = "silent" if "pythonw" in content else "terminal"
-            self._set_startup(mode)
+    # ----- Refresh timing -----
 
     def _set_mode(self, mode):
         self._mode = mode
-        self._hourly_action.setChecked(mode == "hourly")
-        self._daily_action.setChecked(mode == "daily")
-        self._timer.stop()
-        if mode == "hourly":
-            self._timer.start(3600000)
-        else:
-            self._timer.start(86400000)
+        self._save_mode()
         self.show_new_verse()
+        self._schedule_next()
+
+    def _schedule_next(self):
+        if self._mode == "daily":
+            now = datetime.datetime.now()
+            midnight = datetime.datetime.combine(now.date() + datetime.timedelta(days=1), datetime.time())
+            ms = int((midnight - now).total_seconds() * 1000) + 1000
+        else:
+            ms = MODE_INTERVALS.get(self._mode, MODE_INTERVALS["hourly"])
+        self._timer.start(ms)
+
+    def _on_timer(self):
+        self.show_new_verse()
+        self._schedule_next()
 
     def _open_prayer(self, prayer_id="lords-prayer"):
-        """Open a prayer window using the current translation."""
-        abbr = self._translation
-        if abbr is None:
-            abbr = "en_kjv"
-        self._prayer_window = PrayerWindow(abbr, prayer_id)
-        self._prayer_window.show()
+        """Open a prayer window using the current (or last shown) translation."""
+        abbr = self._translation or self._shown_translation or "en_kjv"
+        window = PrayerWindow(abbr, prayer_id, self._menu_lang)
+        window.setAttribute(Qt.WA_DeleteOnClose)
+        self._prayer_windows.append(window)
+        window.destroyed.connect(lambda _=None, w=window: self._forget_prayer(w))
+        window.show()
+
+    def _forget_prayer(self, window):
+        if window in self._prayer_windows:
+            self._prayer_windows.remove(window)
 
     def _exit_app(self):
         try:
@@ -349,44 +583,56 @@ class BibleWidget(QWidget):
                 os.remove(self._pid_path)
         except OSError:
             pass
+        self._tray_icon.hide()
         QApplication.quit()
 
+    # ----- UI -----
+
     def _setup_fonts(self):
-        self.verse_font = QFont("Calibri", 26)
-        self.verse_font.setWeight(QFont.Normal)
-        self.ref_font = QFont("Calibri", 15)
-        self.ref_font.setWeight(QFont.DemiBold)
+        self.verse_font = QFont("Segoe UI", 26)
+        self.verse_font.setWeight(QFont.Medium)
+        self.ref_font = QFont("Segoe UI", 16)
+        self.ref_font.setWeight(QFont.Medium)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(45, 30, 45, 30)
+        layout.setContentsMargins(50, 35, 50, 35)
         layout.setSpacing(12)
         layout.setAlignment(Qt.AlignCenter)
 
+        self._separators = []
+        separator_top = QFrame()
+        separator_top.setFrameShape(QFrame.HLine)
+        separator_top.setFixedHeight(1)
+        layout.addWidget(separator_top)
+        self._separators.append(separator_top)
+
         self.ref_label = QLabel()
         self.ref_label.setFont(self.ref_font)
-        self.ref_label.setStyleSheet("color: white;")
         self.ref_label.setAlignment(Qt.AlignCenter)
+        self.ref_label.setWordWrap(True)
         layout.addWidget(self.ref_label)
 
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
-        separator.setStyleSheet("background-color: rgba(180, 180, 180, 120);")
         separator.setFixedHeight(1)
         layout.addWidget(separator)
+        self._separators.append(separator)
 
         self.verse_label = QLabel()
         self.verse_label.setFont(self.verse_font)
-        self.verse_label.setStyleSheet("color: white;")
         self.verse_label.setAlignment(Qt.AlignCenter)
         self.verse_label.setWordWrap(True)
         layout.addWidget(self.verse_label)
 
-    def show_new_verse(self):
-        if self._mode == "daily":
-            ref, text = get_verse_of_the_day(self._translation)
+        self._apply_label_styles()
+
+    def show_new_verse(self, manual=False):
+        if self._mode == "daily" and not manual:
+            ref, text, abbr = get_verse_of_the_day(self._translation, with_translation=True)
         else:
-            ref, text = get_random_passage(self._translation)
+            ref, text, abbr = get_random_passage(self._translation, with_translation=True)
+        self._shown_translation = abbr
         self.ref_label.setText(ref)
         self.verse_label.setText(text)
         self._quote_count += 1
@@ -401,19 +647,22 @@ class BibleWidget(QWidget):
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
 
-        if self._mode == "hourly":
-            interval_mins = 60
-        else:
-            interval_mins = 1440
-        next_refresh = now + datetime.timedelta(minutes=interval_mins)
+        next_refresh = now + datetime.timedelta(milliseconds=max(0, self._timer.remainingTime()))
         next_time = next_refresh.strftime("%I:%M %p").lstrip("0")
+
+        books, verses = get_translation_info(self._shown_translation) if self._shown_translation else (0, 0)
+        names = {a: n for a, n, _ in get_available_translations()}
+        translation = names.get(self._shown_translation, self._shown_translation)
+        if self._translation is None:
+            translation += " (random)"
 
         return (
             f"Current Quote:  {self.ref_label.text()}\n"
+            f"Translation:    {translation}\n"
             f"Mode:           {self._mode.capitalize()}\n"
             f"Next refresh:   {next_time}\n"
-            f"Verses in DB:   {self._total_verses}\n"
-            f"Books:          {self._book_count}\n"
+            f"Verses:         {verses}\n"
+            f"Books:          {books}\n"
             f"Uptime:         {hours}h {minutes}m {seconds}s\n"
             f"Quotes shown:   {self._quote_count}\n"
             f"Widget size:    {self.width()} x {self.height()}\n"
@@ -423,34 +672,118 @@ class BibleWidget(QWidget):
     def _print_stats(self):
         print("--- Bible Widget - Stats for Nerds ---")
         print(self._build_stats_text())
-        print("---------------------------------------")
+        print("---------------------------------------", flush=True)
 
     def _copy_verse(self):
-        text = f"{self.ref_label.text()} — {self.verse_label.text()}"
+        text = f"{self.verse_label.text()}\n{self.ref_label.text()}"
         QApplication.clipboard().setText(text)
 
     def _show_stats(self):
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Bible Widget — Stats")
+        msg = QMessageBox()
+        msg.setWindowTitle(f"Bible Widget - {self._s('Stats')}")
         msg.setIcon(QMessageBox.Information)
         msg.setFont(QFont("Consolas", 10))
+        msg.setText(self._build_stats_text())
         label = msg.findChild(QLabel, "qt_msgbox_label")
         if label is not None:
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        msg.setText(self._build_stats_text())
         msg.exec()
 
-    def _save_anchor(self):
-        self._anchor_pos = self.frameGeometry().topLeft()
+    # ----- Position and snapping -----
+
+    def _clamp_to_screen(self):
+        screen = self._screen_at_center()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        x = max(geo.x(), min(self.x(), geo.x() + geo.width() - self.width()))
+        y = max(geo.y(), min(self.y(), geo.y() + geo.height() - self.height()))
+        self.move(x, y)
+
+    def _load_snap_corner(self):
+        try:
+            if os.path.isfile(self._corner_path):
+                with open(self._corner_path, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+                if lines and lines[0].strip() in ("tl", "tr", "bl", "br"):
+                    self._snap_corner = lines[0].strip()
+                if len(lines) >= 2:
+                    self._snap_screen_name = lines[1].strip()
+                if len(lines) >= 3:
+                    self._snap_enabled = lines[2].strip() != "off"
+                if len(lines) >= 4 and "," in lines[3]:
+                    x, y = lines[3].split(",", 1)
+                    self._free_pos = QPoint(int(x), int(y))
+        except (OSError, ValueError):
+            pass
+
+    def _save_snap_corner(self):
+        try:
+            with open(self._corner_path, "w", encoding="utf-8") as f:
+                enabled = "on" if self._snap_enabled else "off"
+                f.write(f"{self._snap_corner}\n{self._snap_screen_name}\n{enabled}")
+                if self._free_pos is not None:
+                    f.write(f"\n{self._free_pos.x()},{self._free_pos.y()}")
+        except OSError:
+            pass
+
+    def _screen_for_snap(self):
+        if self._snap_screen_name:
+            for s in QApplication.screens():
+                if s.name() == self._snap_screen_name:
+                    return s
+        return QApplication.primaryScreen()
+
+    def _screen_at_center(self):
+        center = self.frameGeometry().center()
+        return QGuiApplication.screenAt(center) or self.screen() or QApplication.primaryScreen()
+
+    def _place(self):
+        """Put the widget where the saved settings say: a corner, or its free position."""
+        if self._snap_enabled or self._free_pos is None:
+            self._snap_to_corner(self._snap_corner)
+        else:
+            self.move(self._free_pos)
+            self._clamp_to_screen()
+
+    def _snap_to_corner(self, corner: str) -> None:
+        screen = self._screen_for_snap()
+        if screen is None:
+            return
+        if corner not in ("tl", "tr", "bl", "br"):
+            corner = "tr"
+        self._snap_corner = corner
+        sg = screen.availableGeometry()
+        margin = 20
+        w = self.width()
+        h = self.height()
+        x = sg.x() + margin if corner in ("tl", "bl") else sg.x() + sg.width() - w - margin
+        y = sg.y() + margin if corner in ("tl", "tr") else sg.y() + sg.height() - h - margin
+        x = max(sg.x(), min(x, sg.x() + sg.width() - w))
+        y = max(sg.y(), min(y, sg.y() + sg.height() - h))
+        target = QPoint(x, y)
+        if self.isVisible() and self.pos() != target:
+            self._animate_to(target)
+        else:
+            self.move(target)
+
+    def _animate_to(self, target: QPoint) -> None:
+        if self._snap_anim is not None:
+            self._snap_anim.stop()
+        anim = QPropertyAnimation(self, b"pos", self)
+        anim.setDuration(200)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(self.pos())
+        anim.setEndValue(target)
+        anim.start()
+        self._snap_anim = anim
 
     def _fit_text_size(self):
-        if not self._screen:
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
             return
 
-        self.verse_label.setWordWrap(True)
-        self.ref_label.setWordWrap(True)
-
-        screen_height = self._screen.geometry().height()
+        screen_height = screen.geometry().height()
         base_size = max(14, min(60, screen_height // 30))
         total_len = len(self.verse_label.text()) + len(self.ref_label.text())
         if total_len > 500:
@@ -465,55 +798,39 @@ class BibleWidget(QWidget):
             size = int(base_size * 1.15)
         size = max(12, min(72, size))
 
-        self.verse_font.setPointSize(size)
-        self.verse_label.setFont(self.verse_font)
-        ref_size = max(10, min(28, size // 2 + 2))
-        self.ref_font.setPointSize(ref_size)
-        self.ref_label.setFont(self.ref_font)
-
-        fw = max(50, self.width() - 90)
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        fw = max(50, self.width() - margins.left() - margins.right())
         self.verse_label.setFixedWidth(fw)
         self.ref_label.setFixedWidth(fw)
-        self.verse_label.updateGeometry()
-        self.ref_label.updateGeometry()
 
-        # Shrink the font until the wrapped text fits the constant window
-        # height. The window size never changes — long verses just use a
-        # smaller font instead of growing the widget.
-        available_h = self.height() - 60 - 12
-        fm_v = self.verse_label.fontMetrics()
-        fm_r = self.ref_label.fontMetrics()
-        v_rect = fm_v.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
-        r_rect = fm_r.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
-        need_h = v_rect.height() + r_rect.height() + 60 + 12
-        while need_h > available_h and size > 12:
-            size -= 1
+        # Two separators plus the spacing between the four layout items
+        chrome = margins.top() + margins.bottom() + 2 + 3 * layout.spacing()
+        available_h = self.height() - chrome
+
+        while True:
             self.verse_font.setPointSize(size)
             self.verse_label.setFont(self.verse_font)
-            ref_size = max(10, min(28, size // 2 + 2))
-            self.ref_font.setPointSize(ref_size)
+            self.ref_font.setPointSize(max(10, min(28, size // 2 + 2)))
             self.ref_label.setFont(self.ref_font)
-            fm_v = self.verse_label.fontMetrics()
-            fm_r = self.ref_label.fontMetrics()
-            v_rect = fm_v.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
-            r_rect = fm_r.boundingRect(0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
-            need_h = v_rect.height() + r_rect.height() + 60 + 12
-        self.layout().activate()
-
-        if self._anchor_pos is not None:
-            self.move(self._anchor_pos)
+            v_rect = self.verse_label.fontMetrics().boundingRect(
+                0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
+            r_rect = self.ref_label.fontMetrics().boundingRect(
+                0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
+            if v_rect.height() + r_rect.height() <= available_h or size <= 12:
+                break
+            size -= 1
+        layout.activate()
 
     def resizeEvent(self, event):
-        if self._resizing:
-            return
-        self._resizing = True
         super().resizeEvent(event)
         path = QPainterPath()
         path.addRoundedRect(0, 0, self.width(), self.height(), 16, 16)
-        region = QRegion(path.toFillPolygon().toPolygon())
-        self.setMask(region)
-        self._fit_text_size()
-        self._resizing = False
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        if not self._resizing:
+            self._resizing = True
+            self._fit_text_size()
+            self._resizing = False
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -534,6 +851,9 @@ class BibleWidget(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = event.globalPosition().toPoint()
+            self._dragging = True
+            if self._snap_anim is not None:
+                self._snap_anim.stop()
 
     def mouseMoveEvent(self, event):
         if self._drag_pos is not None:
@@ -542,19 +862,192 @@ class BibleWidget(QWidget):
             self._drag_pos = event.globalPosition().toPoint()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = None
-            self._save_anchor()
+        if event.button() != Qt.MouseButton.LeftButton or not self._dragging:
+            return
+        self._drag_pos = None
+        self._dragging = False
+        screen = self._screen_at_center()
+        if screen is None:
+            return
+        self._snap_screen_name = screen.name() or ""
+        if not self._snap_enabled:
+            self._clamp_to_screen()
+            self._free_pos = self.pos()
+            self._save_snap_corner()
+            return
+        sg = screen.availableGeometry()
+        center = self.frameGeometry().center()
+        left = center.x() - sg.x() < sg.width() / 2
+        top = center.y() - sg.y() < sg.height() / 2
+        self._snap_corner = ("t" if top else "b") + ("l" if left else "r")
+        self._save_snap_corner()
+        self._snap_to_corner(self._snap_corner)
+
+
+class ColorSettingsDialog(QDialog):
+    _ROW_KEYS = [
+        ("text", "Verse Text"),
+        ("backdrop", "Background"),
+        ("separator", "Separator Line"),
+    ]
+
+    colors_changed = Signal()
+
+    def __init__(self, current_colors, tr=lambda key: key, parent=None):
+        super().__init__(parent)
+        self._tr = tr
+        self.setWindowTitle(tr("Customize Colors"))
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.setFont(QFont("Segoe UI", 10))
+        self.setMinimumWidth(320)
+
+        self._pending = {key: QColor(current_colors[key]) for key, _ in self._ROW_KEYS}
+        self._swatches = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        for key, label in self._ROW_KEYS:
+            row = self._make_color_row(key, tr(label), self._pending[key])
+            layout.addWidget(row)
+
+        layout.addSpacing(8)
+
+        reset_btn = QPushButton(tr("Reset to Defaults"))
+        reset_btn.clicked.connect(self._on_reset)
+        layout.addWidget(reset_btn)
+
+        buttons = QDialogButtonBox()
+        apply_btn = buttons.addButton(tr("Apply"), QDialogButtonBox.ApplyRole)
+        ok_btn = buttons.addButton(QDialogButtonBox.Ok)
+        cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        apply_btn.clicked.connect(self._on_apply)
+        ok_btn.clicked.connect(self._on_ok)
+        cancel_btn.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _make_color_row(self, key: str, label: str, color: QColor) -> QWidget:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(12)
+
+        h.addWidget(QLabel(label), 1)
+
+        swatch = QPushButton()
+        swatch.setFixedSize(48, 24)
+        swatch.setCursor(Qt.PointingHandCursor)
+        swatch.clicked.connect(lambda _, k=key, n=label: self._pick_color(k, n))
+        self._update_swatch(swatch, color)
+        h.addWidget(swatch)
+
+        self._swatches[key] = swatch
+        return row
+
+    def _update_swatch(self, swatch: QPushButton, color: QColor) -> None:
+        swatch.setStyleSheet(
+            f"background-color: {_rgba(color)}; border: 1px solid #888; border-radius: 3px;"
+        )
+        swatch.setToolTip(f"{color.name()}  ({round(color.alphaF() * 100)}%)")
+
+    def _pick_color(self, key: str, label: str) -> None:
+        chosen = QColorDialog.getColor(
+            self._pending[key], self, label, QColorDialog.ShowAlphaChannel
+        )
+        if chosen.isValid():
+            self._pending[key] = chosen
+            self._update_swatch(self._swatches[key], chosen)
+
+    def _on_reset(self) -> None:
+        for key, _ in self._ROW_KEYS:
+            default = QColor(DEFAULT_COLORS[key])
+            self._pending[key] = default
+            self._update_swatch(self._swatches[key], default)
+
+    def _on_apply(self) -> None:
+        for key, _ in self._ROW_KEYS:
+            set_color(key, self._pending[key])
+        self.colors_changed.emit()
+
+    def _on_ok(self) -> None:
+        self._on_apply()
+        self.accept()
+
+
+def _setup_logging():
+    """Everything runs without a console, so errors go to widget.log."""
+    handler = RotatingFileHandler(
+        os.path.join(APP_DIR, "widget.log"), maxBytes=512 * 1024, backupCount=1, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+    def excepthook(exc_type, exc, tb):
+        log.error("Unhandled exception:\n%s", "".join(traceback.format_exception(exc_type, exc, tb)))
+        if sys.__excepthook__ and sys.stderr is not None:
+            sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = excepthook
+
+    levels = {
+        QtMsgType.QtWarningMsg: logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg: logging.CRITICAL,
+    }
+
+    def qt_handler(msg_type, context, message):
+        if msg_type in levels:
+            log.log(levels[msg_type], "Qt: %s", message)
+
+    qInstallMessageHandler(qt_handler)
+
+
+def _notify_running_instance(name):
+    """If another widget is already running, ask it to show itself. Returns True if so."""
+    socket = QLocalSocket()
+    socket.connectToServer(name)
+    if not socket.waitForConnected(500):
+        return False
+    socket.write(b"show")
+    socket.flush()
+    socket.waitForBytesWritten(500)
+    socket.disconnectFromServer()
+    return True
 
 
 def run_widget():
-    pid_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget.pid")
+    _setup_logging()
+    app = QApplication(sys.argv)
+    # The widget is a tool window; closing a dialog must not end the app
+    app.setQuitOnLastWindowClosed(False)
+
+    server_name = f"BibleWidget-{getpass.getuser()}"
+    if _notify_running_instance(server_name):
+        log.info("Already running; asked the existing widget to show itself")
+        return
+
+    QLocalServer.removeServer(server_name)
+    server = QLocalServer()
+    server.listen(server_name)
+
+    pid_path = os.path.join(APP_DIR, "widget.pid")
     with open(pid_path, "w") as f:
         f.write(str(os.getpid()))
 
-    app = QApplication(sys.argv)
+    log.info("Bible Widget starting (pid %s)", os.getpid())
     widget = BibleWidget()
     widget.show()
+
+    def on_connection():
+        conn = server.nextPendingConnection()
+        if conn is not None:
+            conn.disconnected.connect(conn.deleteLater)
+            widget._bring_back()
+
+    server.newConnection.connect(on_connection)
     sys.exit(app.exec())
 
 

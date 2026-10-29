@@ -9,6 +9,11 @@ build/
 widget.pid
 translation.txt
 language.txt
+colors.txt
+corner.txt
+mode.txt
+*.log
+*.log.*
 
 # IDE
 .vscode/

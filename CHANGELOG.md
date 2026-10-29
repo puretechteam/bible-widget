@@ -1,5 +1,54 @@
 # Changelog
 
+## v2.0.0
+
+### Added
+- **Color customization** — pick your own colors for the verse text, background, and separator line. Right-click the tray icon → "Customize Colors..." to open a settings dialog with a color swatch and picker for each element. Click "Reset to Defaults" to restore the original dark style.
+- **Smart corner snapping** — drag the widget anywhere on screen and release; it smoothly animates to the nearest screen corner (top-left, top-right, bottom-left, or bottom-right) with a 20px margin. The snap uses a 200ms animated ease-out.
+- **Snap to Corners toggle** — right-click the tray icon → "Snap to Corners" to turn the corner-snapping behavior on or off. Your preference is saved and remembered.
+- **Persistent corner + screen** — your chosen corner and the monitor it's anchored to are saved to `corner.txt`. The widget reopens in the same spot next launch, and falls back to your primary monitor if the saved one is disconnected.
+- **Snap respects taskbar** — bottom corners snap above the taskbar, not behind it.
+- **Show Widget button** — if the widget ever goes missing (e.g. after Win+D or a fullscreen app), right-click the tray icon → "Show Widget" to bring it back instantly.
+- **Segoe UI font** — the widget now uses the Windows system font (Segoe UI) with Medium weight for both the verse and citation, giving a clean modern look that stays readable on translucent backgrounds.
+- **Card shadow** — a soft drop shadow makes the widget look like a floating card on your desktop.
+- **Gradient separator** — the line between the citation and the verse fades to transparent at the edges for a more polished look.
+
+### Changed
+- **Removed theme toggle** — the old dark/light theme switcher is gone. Use the new color customization to set any colors you want.
+- **Removed `theme.py` and `theme.txt`** — replaced by the new `colors.py` module and `colors.txt` file.
+- **`prayer_window.py`** — updated to use the new color system.
+
+### Fixed
+- **Widget sizing** — long verses no longer stretch the widget off-screen. The widget keeps a constant size and the font automatically shrinks to fit the text.
+- **Customize Colors never opened**: the dialog class was defined after the app started, so clicking the menu item failed silently (with only a beep). It now opens every time.
+- **Colors keep their transparency**: the color picker has an alpha slider, and partly transparent text and separator colors are respected instead of turning solid.
+- **Prayer window opened blank**: the first prayer now loads straight away instead of only after pressing a navigation arrow. Opening a second prayer no longer closes the first.
+- **Win+D (Show Desktop)**: the widget no longer re-parents itself into the desktop window (which made it jump, shrink, or land off-screen on multi-monitor setups). It now sits at the bottom of the window stack and rises above the desktop whenever the desktop is in focus, including after Win+D.
+- **Dragging between monitors**: the widget no longer snaps back mid-drag. On release it snaps to the nearest corner of the monitor it was dropped on, and that monitor is remembered.
+- **Widget slowly grew wider**: a margin miscalculation added 10 px of width every time the text was refit.
+- **Translation menu**: the checkmark now stays on the chosen translation, and "All (Random)" is remembered after a restart.
+- **Run on Startup**: added an "Off" option, "With console" now really opens a console (with live stats), and the launcher is no longer rewritten on every start.
+- **Stats**: verse and book counts are for the current translation, and "Next refresh" shows when the timer will actually fire.
+- **Daily mode** now changes at local midnight (it used to count 24 hours from when it was turned on) and the chosen mode is remembered.
+- **Verse text cleanup**: KJV translator footnotes are removed, Portuguese (AA) asides show in parentheses, Chinese text no longer has a space between every character, Esperanto shows real letters (ĉ, ĝ, ŝ, ŭ) instead of "cx" spellings, broken characters in the Chinese and Esperanto texts are repaired, and placeholder verses in the Chinese Union Version are skipped.
+- **Book names in each language**: references now show native book names (e.g. "Josué 15:42", "約書亞記" in Chinese) and English book names are consistent across translations ("1 Timothy", "Revelation").
+- **Missing menu text**: "Show Widget", "Customize Colors...", "Snap to Corners" and the 5 newer prayer names are now translated in all 14 menu languages.
+- **French translation name** in the menu now reads "La Bible de l'Épée".
+- **Prayer fallback**: a prayer missing from the chosen translation now falls back to another Bible in the same language, then KJV, instead of Arabic.
+
+### Added
+- **Random Mode**: a new verse every 15 minutes.
+- **Error log**: problems are written to `widget.log` in the app folder (capped at 512 KB), since the widget runs without a console.
+- **Single instance**: launching the widget again brings the running one forward instead of opening a second copy.
+- **Click the tray icon** to bring the widget forward for a few seconds.
+- **Free position is remembered** when corner snapping is turned off.
+
+### Changed
+- **Lower memory use**: translations are loaded on demand (the current one plus a couple of recent ones) instead of all 25 at startup, cutting memory use from roughly 224 MB to well under 100 MB and making startup faster.
+- **No taskbar flash**: the widget's window type is set before it is first shown.
+
+---
+
 ## v1.3.0
 
 ### Added
@@ -60,7 +109,7 @@
 
 ---
 
-## v1.1.0
+## v1.1.0-testing-deepseek-v4-flash
 
 ### Added
 - **19 Bible translations** (14 languages): Arabic, Chinese (×2), German, Greek, English (×2), Esperanto, Spanish, Finnish (×2), French, Korean, Portuguese (×3), Romanian, Russian, Vietnamese
