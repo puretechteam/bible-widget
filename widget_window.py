@@ -8,11 +8,11 @@ import traceback
 from logging.handlers import RotatingFileHandler
 from PySide6.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QLabel,
-    QFrame, QSystemTrayIcon, QMenu, QMessageBox, QGraphicsDropShadowEffect,
+    QFrame, QSystemTrayIcon, QMenu, QMessageBox, QLayout,
     QDialog, QDialogButtonBox, QPushButton, QHBoxLayout, QColorDialog
 )
 from PySide6.QtGui import (
-    QFont, QPainter, QColor, QBrush, QPen, QRegion, QPainterPath, QIcon, QPixmap,
+    QFont, QPainter, QColor, QPen, QIcon, QPixmap,
     QAction, QActionGroup, QGuiApplication
 )
 from PySide6.QtCore import (
@@ -25,11 +25,14 @@ from bible_loader import (
 )
 from prayer_window import PrayerWindow
 from menu_strings import get_string, get_available_languages, get_translated_language_name
-from colors import get_colors, set_color, DEFAULT_COLORS, rgba as _rgba, separator_style as _separator_style
+from colors import (
+    get_colors, set_color, DEFAULT_COLORS, paint_card, rgba as _rgba, separator_style as _separator_style
+)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RANDOM_TRANSLATION = "random"
 MODE_INTERVALS = {"hourly": 3600000, "random": 900000}  # daily is scheduled for midnight
+MIN_VERSE_PT = 10
 
 log = logging.getLogger("bible_widget")
 
@@ -92,6 +95,7 @@ class BibleWidget(QWidget):
         self._drag_pos = None
         self._dragging = False
         self._resizing = False
+        self._base_size = (384, 324)  # replaced with 20% x 30% of the screen below
         self._mode = "hourly"
         self._snap_anim = None
         self._corner_path = os.path.join(APP_DIR, "corner.txt")
@@ -104,16 +108,8 @@ class BibleWidget(QWidget):
         self._load_mode()
 
         self._colors = get_colors()
-        self._backdrop_brush = QBrush(self._colors["backdrop"])
         self._text_color = self._colors["text"]
         self._separator_color = self._colors["separator"]
-        self._no_pen = QPen(Qt.NoPen)
-
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(12)
-        shadow.setOffset(0, 2)
-        shadow.setColor(self._colors["shadow"])
-        self.setGraphicsEffect(shadow)
 
         self._setup_fonts()
         self._setup_ui()
@@ -133,7 +129,8 @@ class BibleWidget(QWidget):
         self._repair_startup()
 
         scr = self._screen_for_snap().geometry()
-        self.resize(int(scr.width() * 0.2), int(scr.height() * 0.3))
+        self._base_size = (int(scr.width() * 0.2), int(scr.height() * 0.3))
+        self.resize(*self._base_size)
         self._place()
 
         app = QApplication.instance()
@@ -338,14 +335,9 @@ class BibleWidget(QWidget):
 
     def _apply_colors(self):
         self._colors = get_colors()
-        self._backdrop_brush = QBrush(self._colors["backdrop"])
         self._text_color = self._colors["text"]
         self._separator_color = self._colors["separator"]
         self._apply_label_styles()
-
-        shadow = self.graphicsEffect()
-        if isinstance(shadow, QGraphicsDropShadowEffect):
-            shadow.setColor(self._colors["shadow"])
 
         self._tray_icon.setIcon(QIcon(self._make_tray_pixmap()))
         self.update()
@@ -355,7 +347,7 @@ class BibleWidget(QWidget):
 
     def _apply_label_styles(self):
         self.ref_label.setStyleSheet(f"color: {_rgba(self._text_color)};")
-        self.verse_label.setStyleSheet(f"color: {_rgba(self._text_color)}; letter-spacing: 0.5px;")
+        self.verse_label.setStyleSheet(f"color: {_rgba(self._text_color)};")
         for sep in self._separators:
             sep.setStyleSheet(_separator_style(self._separator_color))
 
@@ -579,6 +571,8 @@ class BibleWidget(QWidget):
     def _setup_fonts(self):
         self.verse_font = QFont("Segoe UI", 26)
         self.verse_font.setWeight(QFont.Medium)
+        # On the font rather than in the stylesheet so text measurement includes it
+        self.verse_font.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
         self.ref_font = QFont("Segoe UI", 16)
         self.ref_font.setWeight(QFont.Medium)
 
@@ -587,6 +581,8 @@ class BibleWidget(QWidget):
         layout.setContentsMargins(50, 35, 50, 35)
         layout.setSpacing(12)
         layout.setAlignment(Qt.AlignCenter)
+        # The window size is managed by _fit_text_size, not by the labels' size hints
+        layout.setSizeConstraint(QLayout.SetNoConstraint)
 
         self._separators = []
         separator_top = QFrame()
@@ -617,9 +613,9 @@ class BibleWidget(QWidget):
 
     def show_new_verse(self, manual=False):
         if self._mode == "daily" and not manual:
-            ref, text, abbr = get_verse_of_the_day(self._translation, with_translation=True)
+            ref, text, abbr = get_verse_of_the_day(self._translation, with_translation=True, fits=self._fits)
         else:
-            ref, text, abbr = get_random_passage(self._translation, with_translation=True)
+            ref, text, abbr = get_random_passage(self._translation, with_translation=True, fits=self._fits)
         self._shown_translation = abbr
         self.ref_label.setText(ref)
         self.verse_label.setText(text)
@@ -766,11 +762,29 @@ class BibleWidget(QWidget):
         anim.start()
         self._snap_anim = anim
 
-    def _fit_text_size(self):
+    def _fits(self, ref, text):
+        """Would this passage fit the card at the normal widget size?"""
+        self.ref_label.setText(ref)
+        self.verse_label.setText(text)
+        return self._fit_text_size(allow_grow=False)
+
+    def _set_font_size(self, size, fw):
+        """Apply a verse font size; returns the height the reference and verse need."""
+        self.verse_font.setPointSize(size)
+        self.verse_label.setFont(self.verse_font)
+        self.ref_font.setPointSize(max(10, min(28, size // 2 + 2)))
+        self.ref_label.setFont(self.ref_font)
+        return self.verse_label.heightForWidth(fw) + self.ref_label.heightForWidth(fw)
+
+    def _fit_text_size(self, allow_grow=True):
+        """Use the largest font that fits the card, down to MIN_VERSE_PT.
+        Returns True if the text fits at the normal size. If it does not and allow_grow
+        is set, the widget grows taller for this passage only."""
         screen = self.screen() or QApplication.primaryScreen()
         if screen is None:
-            return
+            return True
 
+        base_w, base_h = self._base_size
         screen_height = screen.geometry().height()
         base_size = max(14, min(60, screen_height // 30))
         total_len = len(self.verse_label.text()) + len(self.ref_label.text())
@@ -784,37 +798,39 @@ class BibleWidget(QWidget):
             size = int(base_size * 1.0)
         else:
             size = int(base_size * 1.15)
-        size = max(12, min(72, size))
+        size = max(MIN_VERSE_PT, min(72, size))
 
         layout = self.layout()
         margins = layout.contentsMargins()
-        fw = max(50, self.width() - margins.left() - margins.right())
+        fw = max(50, base_w - margins.left() - margins.right())
         self.verse_label.setFixedWidth(fw)
         self.ref_label.setFixedWidth(fw)
 
         # Two separators plus the spacing between the four layout items
         chrome = margins.top() + margins.bottom() + 2 + 3 * layout.spacing()
-        available_h = self.height() - chrome
+        available_h = base_h - chrome
 
-        while True:
-            self.verse_font.setPointSize(size)
-            self.verse_label.setFont(self.verse_font)
-            self.ref_font.setPointSize(max(10, min(28, size // 2 + 2)))
-            self.ref_label.setFont(self.ref_font)
-            v_rect = self.verse_label.fontMetrics().boundingRect(
-                0, 0, fw, 9999, Qt.TextWordWrap, self.verse_label.text())
-            r_rect = self.ref_label.fontMetrics().boundingRect(
-                0, 0, fw, 9999, Qt.TextWordWrap, self.ref_label.text())
-            if v_rect.height() + r_rect.height() <= available_h or size <= 12:
-                break
+        need = self._set_font_size(size, fw)
+        while need > available_h and size > MIN_VERSE_PT:
             size -= 1
-        layout.activate()
+            need = self._set_font_size(size, fw)
+        fits = need <= available_h
+
+        if allow_grow:
+            max_h = int(screen.availableGeometry().height() * 0.85)
+            target_h = base_h if fits else min(max_h, chrome + need)
+            if (self.width(), self.height()) != (base_w, target_h):
+                self._resizing = True
+                self.resize(base_w, target_h)
+                self._resizing = False
+                if self.isVisible():
+                    self._place()
+            layout.activate()
+            self.update()
+        return fits
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(), 16, 16)
-        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
         if not self._resizing:
             self._resizing = True
             self._fit_text_size()
@@ -823,18 +839,9 @@ class BibleWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        margins = self.layout().contentsMargins()
-        rect = self.rect().adjusted(
-            margins.left() - 35,
-            margins.top() - 25,
-            -(margins.right() - 35),
-            -(margins.bottom() - 25)
-        )
-
-        painter.setBrush(self._backdrop_brush)
-        painter.setPen(self._no_pen)
-        painter.drawRoundedRect(rect, 16, 16)
+        # The card is inset (15, 10) from the window edge to leave room for its shadow
+        paint_card(painter, self.rect().adjusted(15, 10, -15, -10),
+                   self._colors["backdrop"], self._colors["shadow"])
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

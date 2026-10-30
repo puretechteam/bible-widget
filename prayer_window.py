@@ -6,11 +6,11 @@ import html
 import unicodedata
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QFrame, QScrollArea,
-    QGraphicsDropShadowEffect, QApplication
+    QApplication
 )
-from PySide6.QtGui import QFont, QPainter, QBrush, QPen, QColor
+from PySide6.QtGui import QFont, QPainter, QColor
 from PySide6.QtCore import Qt
-from colors import get_colors, rgba, separator_style
+from colors import get_colors, rgba, separator_style, paint_card
 from bible_loader import clean_text, localize_reference
 from menu_strings import get_string
 
@@ -85,12 +85,6 @@ class PrayerWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         self._drag_pos = None
-        self._no_pen = QPen(Qt.NoPen)
-
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(12)
-        shadow.setOffset(0, 2)
-        self.setGraphicsEffect(shadow)
 
         self._setup_ui()
         self._apply_colors()
@@ -173,7 +167,6 @@ class PrayerWindow(QWidget):
 
     def _apply_colors(self):
         self._colors = get_colors()
-        self._backdrop_brush = QBrush(self._colors["backdrop"])
         text = self._colors["text"]
         muted = QColor(text)
         muted.setAlphaF(text.alphaF() * 0.65)
@@ -210,9 +203,6 @@ class PrayerWindow(QWidget):
         for button in (self.prev_button, self.next_button):
             button.setStyleSheet(button_css + "QPushButton { font-size: 18pt; padding: 0 0 4px 0; }")
 
-        shadow = self.graphicsEffect()
-        if isinstance(shadow, QGraphicsDropShadowEffect):
-            shadow.setColor(self._colors["shadow"])
         self.update()
 
     # ----- Prayer navigation -----
@@ -304,9 +294,8 @@ class PrayerWindow(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(self._backdrop_brush)
-        painter.setPen(self._no_pen)
-        painter.drawRoundedRect(self.rect().adjusted(15, 10, -15, -10), 16, 16)
+        paint_card(painter, self.rect().adjusted(15, 10, -15, -10),
+                   self._colors["backdrop"], self._colors["shadow"])
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:

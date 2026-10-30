@@ -310,10 +310,11 @@ def get_available_translations():
     return result
 
 
-def get_random_passage(translation=None, with_translation=False):
+def get_random_passage(translation=None, with_translation=False, fits=None):
     """Returns (reference, text) for 1-5 consecutive verses.
     If translation is None, picks a random one from the available bibles.
-    With with_translation=True, returns (reference, text, translation)."""
+    With with_translation=True, returns (reference, text, translation).
+    fits(reference, text) -> bool, if given, drops trailing verses until the passage fits."""
     _discover()
     if not _ABBREVIATIONS:
         return _result("Error", "No Bible data loaded.", "", with_translation)
@@ -335,19 +336,15 @@ def get_random_passage(translation=None, with_translation=False):
     span = random.choices([1, 2, 3, 4, 5], weights=[40, 25, 18, 12, 5])[0]
     end_idx = min(start_idx + span - 1, len(verse_nums) - 1)
 
-    start_verse = verse_nums[start_idx]
-    end_verse = verse_nums[end_idx]
-
-    text = _build_passage(chapter, start_idx, end_idx, verse_nums, translation)
-    reference = _format_reference(book, chapter_num, start_verse, end_verse)
-
+    reference, text = _passage_that_fits(book, chapter_num, chapter, start_idx, end_idx, verse_nums, translation, fits)
     return _result(reference, text, translation, with_translation)
 
 
-def get_verse_of_the_day(translation=None, with_translation=False):
+def get_verse_of_the_day(translation=None, with_translation=False, fits=None):
     """Returns a deterministic (reference, text) based on the current date.
     If translation is None, picks a random one based on the date.
-    With with_translation=True, returns (reference, text, translation)."""
+    With with_translation=True, returns (reference, text, translation).
+    fits(reference, text) -> bool, if given, drops trailing verses until the passage fits."""
     _discover()
     if not _ABBREVIATIONS:
         return _result("Error", "No Bible data loaded.", "", with_translation)
@@ -369,12 +366,21 @@ def get_verse_of_the_day(translation=None, with_translation=False):
 
     span = local_random.choices([1, 2, 3, 4, 5], weights=[40, 25, 18, 12, 5])[0]
     end_idx = min(start_idx + span - 1, len(verse_nums) - 1)
-    end_verse = verse_nums[end_idx]
 
-    text = _build_passage(chapter, start_idx, end_idx, verse_nums, translation)
-    reference = _format_reference(book_name, chapter_num, start_verse, end_verse)
-
+    reference, text = _passage_that_fits(book_name, chapter_num, chapter, start_idx, end_idx, verse_nums,
+                                         translation, fits)
     return _result(reference, text, translation, with_translation)
+
+
+def _passage_that_fits(book, chapter_num, chapter, start_idx, end_idx, verse_nums, translation, fits):
+    """Build the passage, dropping verses from the end while fits() says it is too long.
+    A single verse is always returned whole."""
+    while True:
+        text = _build_passage(chapter, start_idx, end_idx, verse_nums, translation)
+        reference = _format_reference(book, chapter_num, verse_nums[start_idx], verse_nums[end_idx])
+        if fits is None or end_idx == start_idx or fits(reference, text):
+            return reference, text
+        end_idx -= 1
 
 
 def _result(reference, text, translation, with_translation):

@@ -1,4 +1,5 @@
 import os
+from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QColor
 
 VALID_KEYS = (
@@ -42,6 +43,26 @@ def separator_style(color):
         f"border: none; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
         f"stop:0 transparent, stop:0.3 {c}, stop:0.7 {c}, stop:1 transparent);"
     )
+
+
+def paint_card(painter, rect, backdrop, shadow, radius=16, spread=8, offset=2):
+    """Paint the rounded card with a soft drop shadow in one pass.
+
+    QGraphicsDropShadowEffect is not used because on a translucent window it asks
+    Windows to update an area larger than the window; that update fails and leaves
+    stale, darker pixels behind."""
+    rect = QRectF(rect)
+    painter.setPen(Qt.NoPen)
+    # Stacked layers: the shadow is darkest under the card and fades out over `spread` px
+    target = shadow.alphaF() * backdrop.alphaF()
+    if target > 0:
+        layer = QColor(shadow)
+        layer.setAlphaF(1 - (1 - target) ** (1 / spread))
+        painter.setBrush(layer)
+        for i in range(spread, 0, -1):
+            painter.drawRoundedRect(rect.adjusted(-i, -i + offset, i, i + offset), radius + i, radius + i)
+    painter.setBrush(backdrop)
+    painter.drawRoundedRect(rect, radius, radius)
 
 
 def _colors_path():

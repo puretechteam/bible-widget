@@ -24,10 +24,10 @@ A transparent desktop widget that displays Bible verses on your screen. It sits 
 - **Reset to defaults** — restore the original dark style with one click in the color settings
 - **Show Widget button** — if the widget ever goes missing, right-click the tray icon → "Show Widget" to bring it back
 - **Card shadow** — a soft drop shadow makes it look like a floating card on your desktop
-- **Smart text fit** — the widget keeps a constant size; when a verse is long, the font shrinks to fit instead of stretching the window
+- **Smart text fit**: the widget keeps a constant size and the font shrinks to fit long verses. If a passage is still too long, it is shortened by a verse or two; a single very long verse makes the widget slightly taller just for that verse
 - **25 Bible translations** — 14 languages: Arabic, Chinese (×2), German, Greek, English (×8), Esperanto, Spanish, Finnish (×2), French, Korean, Portuguese (×3), Romanian, Russian, Vietnamese
 - **Menu Language picker** — right-click the tray icon to change the tray menu text to any of 14 languages, independent from your Bible translation
-- **Prayers** — right-click the tray icon → Prayers → choose from 6 prayers (The Lord's Prayer, Jonah's Prayer, Mary's Magnificat, Job's Prayer, Acts 4:24-26, Solomon's Prayer) with prev/next navigation, scrollable text, and Amen button
+- **Prayers** — right-click the tray icon → Prayers → choose from 6 prayers (The Lord's Prayer, Jonah's Prayer, Mary's Magnificat, Job's Prayer, Acts 4:24-26, Solomon's Prayer) with prev/next navigation, scrollable text, and Amen button (arrow keys switch prayers, Esc closes)
 - **Hourly mode** — shows a random passage every hour
 - **Daily mode** — shows the same verse all day (changes at midnight)
 - **Random mode**: a new random passage every 15 minutes
