@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.0.2 (2026-10-30)
+
+### Changed
+- **The widget now matches the prayer window**: the reference is shown in small caps above a single fading line, and the verse has more line spacing (the extra line above the reference is gone). On the real screen, 0 of 30 verse changes leave stale pixels and 0 of 300 passages are cut off, same as v2.0.1. The extra spacing shortens slightly more long passages to fit: 59 of 300, up from 44, for an average of 1.84 verses instead of 1.92.
+- **README screenshots** updated to the new look.
+
+---
+
 ## v2.0.1 (2026-10-30)
 
 ### Fixed

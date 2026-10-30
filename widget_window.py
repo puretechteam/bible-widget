@@ -1,5 +1,6 @@
 import sys
 import os
+import html
 import time
 import getpass
 import datetime
@@ -33,6 +34,8 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RANDOM_TRANSLATION = "random"
 MODE_INTERVALS = {"hourly": 3600000, "random": 900000}  # daily is scheduled for midnight
 MIN_VERSE_PT = 10
+REF_GAP, VERSE_GAP = 12, 16  # space above and below the separator
+VERSE_LINE_HEIGHT = 120  # percent
 
 log = logging.getLogger("bible_widget")
 
@@ -346,10 +349,11 @@ class BibleWidget(QWidget):
             window._apply_colors()
 
     def _apply_label_styles(self):
-        self.ref_label.setStyleSheet(f"color: {_rgba(self._text_color)};")
+        muted = QColor(self._text_color)
+        muted.setAlphaF(self._text_color.alphaF() * 0.65)
+        self.ref_label.setStyleSheet(f"color: {_rgba(muted)};")
         self.verse_label.setStyleSheet(f"color: {_rgba(self._text_color)};")
-        for sep in self._separators:
-            sep.setStyleSheet(_separator_style(self._separator_color))
+        self.separator.setStyleSheet(_separator_style(self._separator_color))
 
     def _open_color_settings(self):
         if self._color_dialog is not None and self._color_dialog.isVisible():
@@ -573,41 +577,40 @@ class BibleWidget(QWidget):
         self.verse_font.setWeight(QFont.Medium)
         # On the font rather than in the stylesheet so text measurement includes it
         self.verse_font.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
-        self.ref_font = QFont("Segoe UI", 16)
-        self.ref_font.setWeight(QFont.Medium)
+        self.ref_font = QFont("Segoe UI", 9)
+        self.ref_font.setWeight(QFont.DemiBold)
+        self.ref_font.setCapitalization(QFont.AllUppercase)
+        self.ref_font.setLetterSpacing(QFont.AbsoluteSpacing, 1.5)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(50, 35, 50, 35)
-        layout.setSpacing(12)
+        layout.setContentsMargins(50, 34, 50, 34)
+        layout.setSpacing(0)
         layout.setAlignment(Qt.AlignCenter)
         # The window size is managed by _fit_text_size, not by the labels' size hints
         layout.setSizeConstraint(QLayout.SetNoConstraint)
 
-        self._separators = []
-        separator_top = QFrame()
-        separator_top.setFrameShape(QFrame.HLine)
-        separator_top.setFixedHeight(1)
-        layout.addWidget(separator_top)
-        self._separators.append(separator_top)
-
+        # Same structure as the prayer window: small-caps reference, one separator, text
         self.ref_label = QLabel()
         self.ref_label.setFont(self.ref_font)
         self.ref_label.setAlignment(Qt.AlignCenter)
         self.ref_label.setWordWrap(True)
         layout.addWidget(self.ref_label)
+        layout.addSpacing(REF_GAP)
 
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFixedHeight(1)
-        layout.addWidget(separator)
-        self._separators.append(separator)
+        self.separator = QFrame()
+        self.separator.setFrameShape(QFrame.HLine)
+        self.separator.setFixedHeight(1)
+        layout.addWidget(self.separator)
+        layout.addSpacing(VERSE_GAP)
 
         self.verse_label = QLabel()
         self.verse_label.setFont(self.verse_font)
+        self.verse_label.setTextFormat(Qt.RichText)
         self.verse_label.setAlignment(Qt.AlignCenter)
         self.verse_label.setWordWrap(True)
         layout.addWidget(self.verse_label)
+        self._verse_text = ""
 
         self._apply_label_styles()
 
@@ -617,8 +620,7 @@ class BibleWidget(QWidget):
         else:
             ref, text, abbr = get_random_passage(self._translation, with_translation=True, fits=self._fits)
         self._shown_translation = abbr
-        self.ref_label.setText(ref)
-        self.verse_label.setText(text)
+        self._set_passage(ref, text)
         self._quote_count += 1
         self._fit_text_size()
         if self._verbose:
@@ -659,7 +661,7 @@ class BibleWidget(QWidget):
         print("---------------------------------------", flush=True)
 
     def _copy_verse(self):
-        text = f"{self.verse_label.text()}\n{self.ref_label.text()}"
+        text = f"{self._verse_text}\n{self.ref_label.text()}"
         QApplication.clipboard().setText(text)
 
     def _show_stats(self):
@@ -762,17 +764,25 @@ class BibleWidget(QWidget):
         anim.start()
         self._snap_anim = anim
 
+    def _set_passage(self, ref, text):
+        """Show a passage. The verse label holds rich text for the line spacing,
+        so the plain text is kept for copying and measuring."""
+        self._verse_text = text
+        self.ref_label.setText(ref)
+        self.verse_label.setText(
+            f'<div style="line-height: {VERSE_LINE_HEIGHT}%;">{html.escape(text)}</div>'
+        )
+
     def _fits(self, ref, text):
         """Would this passage fit the card at the normal widget size?"""
-        self.ref_label.setText(ref)
-        self.verse_label.setText(text)
+        self._set_passage(ref, text)
         return self._fit_text_size(allow_grow=False)
 
     def _set_font_size(self, size, fw):
         """Apply a verse font size; returns the height the reference and verse need."""
         self.verse_font.setPointSize(size)
         self.verse_label.setFont(self.verse_font)
-        self.ref_font.setPointSize(max(10, min(28, size // 2 + 2)))
+        self.ref_font.setPointSize(max(9, min(16, size // 2)))
         self.ref_label.setFont(self.ref_font)
         return self.verse_label.heightForWidth(fw) + self.ref_label.heightForWidth(fw)
 
@@ -787,7 +797,7 @@ class BibleWidget(QWidget):
         base_w, base_h = self._base_size
         screen_height = screen.geometry().height()
         base_size = max(14, min(60, screen_height // 30))
-        total_len = len(self.verse_label.text()) + len(self.ref_label.text())
+        total_len = len(self._verse_text) + len(self.ref_label.text())
         if total_len > 500:
             size = int(base_size * 0.55)
         elif total_len > 300:
@@ -806,8 +816,8 @@ class BibleWidget(QWidget):
         self.verse_label.setFixedWidth(fw)
         self.ref_label.setFixedWidth(fw)
 
-        # Two separators plus the spacing between the four layout items
-        chrome = margins.top() + margins.bottom() + 2 + 3 * layout.spacing()
+        # The separator and the gaps around it
+        chrome = margins.top() + margins.bottom() + REF_GAP + 1 + VERSE_GAP
         available_h = base_h - chrome
 
         need = self._set_font_size(size, fw)
