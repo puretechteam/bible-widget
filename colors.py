@@ -1,6 +1,10 @@
 import os
+import logging
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QColor
+from paths import app_path, read_text, write_text
+
+log = logging.getLogger("bible_widget")
 
 VALID_KEYS = (
     "backdrop",
@@ -66,7 +70,7 @@ def paint_card(painter, rect, backdrop, shadow, radius=16, spread=8, offset=2):
 
 
 def _colors_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "colors.txt")
+    return app_path("colors.txt")
 
 
 def _read_all():
@@ -75,18 +79,17 @@ def _read_all():
     if not os.path.isfile(path):
         return result
     try:
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                if key in VALID_KEYS:
-                    result[key] = value
+        for line in read_text(path).splitlines():  # also with a byte order mark, or saved in ANSI
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key in VALID_KEYS:
+                result[key] = value
     except OSError:
         pass
     return result
@@ -108,20 +111,26 @@ def get_colors():
 def set_color(key, color):
     if key not in VALID_KEYS:
         raise ValueError(f"Invalid color key: {key}")
-    stored = _read_all()
-    stored[key] = color.name(QColor.NameFormat.HexArgb)
-    try:
-        with open(_colors_path(), "w") as f:
-            for k, v in stored.items():
-                f.write(f"{k}={v}\n")
-    except OSError:
-        pass
-
-
-def reset_colors():
+    entry = f"{key}={color.name(QColor.NameFormat.HexArgb)}"
     path = _colors_path()
-    if os.path.isfile(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    try:
+        lines = read_text(path).splitlines()  # kept as written, even if saved in ANSI
+    except OSError:
+        lines = []
+    # Replace this colour's line and keep every other line (comments, other colours) as it was
+    out, replaced = [], False
+    for line in lines:
+        if not line.strip().startswith("#") and "=" in line and line.partition("=")[0].strip() == key:
+            if not replaced:
+                out.append(entry)
+                replaced = True
+            continue
+        out.append(line)
+    if not replaced:
+        out.append(entry)
+    try:
+        write_text(path, "\n".join(out) + "\n")
+    except OSError:
+        log.warning("Could not save %s", path, exc_info=True)
+
+

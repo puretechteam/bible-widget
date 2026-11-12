@@ -22,3 +22,31 @@ mode.txt
 # OS
 Thumbs.db
 Desktop.ini
+
+# Saved verses and update state
+favorites.json
+history.json
+updates.txt
+.update-backup*/
+*.tmp
+
+# Release build output and updater leftovers
+*.zip
+*.zip.sha256
+.update-started-*
+.write-test-*
+update.log
+*.damaged-*
+
+# Secrets, caches and editor files
+.env*
+!.env.example
+*.key
+*.pem
+.venv/
+.pytest_cache/
+.cache/
+.DS_Store
+
+# Release posts (not part of the app)
+promo/

@@ -1,32 +1,29 @@
 """Prayer window widget: displays a prayer with scrollable text and an Amen button."""
 
-import os
-import json
+import logging
 import html
-import unicodedata
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QFrame, QScrollArea,
     QApplication
 )
-from PySide6.QtGui import QFont, QPainter, QColor
+from PySide6.QtGui import QFont, QPainter, QColor, QShortcut, QKeySequence
 from PySide6.QtCore import Qt
 from colors import get_colors, rgba, separator_style, paint_card
+from paths import app_path, read_json
 from bible_loader import clean_text, localize_reference
 from menu_strings import get_string
+from verses import is_rtl as _is_rtl
 
 
 def get_prayers_list():
     """Return the list of available prayers from prayers.json."""
-    prayers_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "prayers", "prayers.json"
-    )
+    prayers_path = app_path("prayers", "prayers.json")
     try:
-        with open(prayers_path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-        return data.get("prayers", [])
-    except (FileNotFoundError, json.JSONDecodeError):
+        prayers = read_json(prayers_path).get("prayers", [])
+    except (OSError, ValueError, AttributeError) as e:
+        logging.getLogger("bible_widget").warning("Could not read prayers/prayers.json: %s", e)
         return []
+    return [p for p in prayers if isinstance(p, dict)] if isinstance(prayers, list) else []
 
 
 def get_prayer(prayer_id, translation_abbr, lang="en"):
@@ -37,6 +34,8 @@ def get_prayer(prayer_id, translation_abbr, lang="en"):
             continue
         name = get_string(prayer.get("name", "Prayer"), lang)
         reference = prayer.get("reference", "")
+        if reference == prayer.get("name"):
+            reference = ""  # the title already is the reference
         translations = prayer.get("translations", {})
         # Prefer the chosen translation, then one in the same language, then KJV
         prefix = translation_abbr.split("_")[0] + "_"
@@ -46,34 +45,17 @@ def get_prayer(prayer_id, translation_abbr, lang="en"):
         for abbr in candidates:
             text = translations.get(abbr)
             if text:
-                return name, localize_reference(reference, abbr), clean_text(text, abbr), abbr
+                # A Bible numbered differently (the Vulgate) names its own verses for the prayer
+                ref = prayer.get("references", {}).get(abbr, reference) if reference else ""
+                return name, localize_reference(ref, abbr) if ref else "", clean_text(text, abbr), abbr
         return name, reference, None, None
     return None
 
 
-def get_prayer_text(prayer_id, translation_abbr, lang="en"):
-    """Returns (title, text) or (None, None) if not found."""
-    prayer = get_prayer(prayer_id, translation_abbr, lang)
-    if prayer is None:
-        return None, None
-    name, reference, text, _ = prayer
-    title = f"{name} ({reference})" if reference and reference not in name else name
-    return title, text
-
-
-def _is_rtl(text):
-    for ch in text:
-        direction = unicodedata.bidirectional(ch)
-        if direction in ("R", "AL"):
-            return True
-        if direction == "L":
-            return False
-    return False
-
-
 class PrayerWindow(QWidget):
-    def __init__(self, translation_abbr=None, prayer_id="lords-prayer", lang="en"):
+    def __init__(self, translation_abbr=None, prayer_id="lords-prayer", lang="en", screen=None):
         super().__init__()
+        self._home_screen = screen  # opens centred here (the widget's screen), else the primary
         self._translation_abbr = translation_abbr or "en_kjv"
         self._prayer_id = prayer_id
         self._lang = lang
@@ -89,6 +71,10 @@ class PrayerWindow(QWidget):
         self._setup_ui()
         self._apply_colors()
         self._load_current_prayer()
+        # Window-wide, so they work even after clicking into the text to select it
+        for key, slot in ((Qt.Key_Escape, self.close), (Qt.Key_Left, lambda: self._arrow(left=True)),
+                          (Qt.Key_Right, lambda: self._arrow(left=False))):
+            QShortcut(QKeySequence(key), self, activated=slot)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -127,6 +113,8 @@ class PrayerWindow(QWidget):
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.viewport().setAutoFillBackground(False)
+        # No keyboard focus here, or it swallows Left/Right (the wheel still scrolls)
+        self.scroll_area.setFocusPolicy(Qt.NoFocus)
 
         self.text_label = QLabel()
         self.text_label.setFont(QFont("Segoe UI", 13))
@@ -220,6 +208,13 @@ class PrayerWindow(QWidget):
             self._prayer_id = self._prayers_list[index].get("id", "lords-prayer")
             self._load_current_prayer()
 
+    def _arrow(self, left):
+        """The arrow keys follow the buttons, which swap sides in right-to-left menus."""
+        if left == (self.layoutDirection() == Qt.LeftToRight):
+            self._prev_prayer()
+        else:
+            self._next_prayer()
+
     def _prev_prayer(self):
         if self._prayers_list:
             self._load_by_index((self._find_current_index() - 1) % len(self._prayers_list))
@@ -232,12 +227,16 @@ class PrayerWindow(QWidget):
         prayer = get_prayer(self._prayer_id, self._translation_abbr, self._lang)
         if prayer is None or prayer[2] is None:
             self.ref_label.setText("")
+            self.ref_label.setVisible(False)
             self.title_label.setText(get_string("Prayer not available", self._lang))
             self.text_label.setText("")
         else:
             name, reference, text, _ = prayer
-            self.ref_label.setText(reference if reference != name else "")
-            self.ref_label.setVisible(reference != name)
+            ref_font = self.ref_label.font()  # no letter spacing in joined scripts such as Arabic
+            ref_font.setLetterSpacing(QFont.AbsoluteSpacing, 0 if _is_rtl(reference) else 1.5)
+            self.ref_label.setFont(ref_font)
+            self.ref_label.setText(reference)
+            self.ref_label.setVisible(bool(reference))
             self.title_label.setText(name)
             rtl = _is_rtl(text)
             self.text_label.setLayoutDirection(Qt.RightToLeft if rtl else Qt.LeftToRight)
@@ -250,9 +249,9 @@ class PrayerWindow(QWidget):
 
     # ----- Sizing and placement -----
 
-    def _fit_window(self):
+    def _fit_window(self, screen=None):
         """Fixed width; height follows the text up to 70% of the screen, after which it scrolls."""
-        screen = self.screen() or QApplication.primaryScreen()
+        screen = screen or self.screen() or QApplication.primaryScreen()
         avail = screen.availableGeometry()
         width = int(min(600, max(440, avail.width() * 0.27)))
         layout = self.layout()
@@ -263,7 +262,7 @@ class PrayerWindow(QWidget):
         text_h = self.text_label.heightForWidth(inner)
         chrome = (
             m.top() + m.bottom()
-            + (self.ref_label.sizeHint().height() + 6 if self.ref_label.isVisibleTo(self) else 0)
+            + (self.ref_label.sizeHint().height() if self.ref_label.isVisibleTo(self) else 0) + 6
             + self.title_label.heightForWidth(inner)
             + 16 + 1 + 18 + 22 + 40
         )
@@ -274,7 +273,7 @@ class PrayerWindow(QWidget):
             self._clamp_to_screen()
 
     def _clamp_to_screen(self):
-        screen = self.screen()
+        screen = self._screen_at_center()
         if screen is None:
             return
         geo = screen.availableGeometry()
@@ -285,10 +284,13 @@ class PrayerWindow(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         if not self._placed:
-            self._placed = True
-            self._fit_window()
-            geo = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+            home = self._home_screen
+            if home not in QApplication.screens():  # none given, or since unplugged
+                home = self.screen() or QApplication.primaryScreen()
+            self._fit_window(home)
+            geo = home.availableGeometry()
             self.move(geo.center() - self.rect().center())
+            self._placed = True
             self.activateWindow()
 
     def paintEvent(self, event):
@@ -297,15 +299,6 @@ class PrayerWindow(QWidget):
         paint_card(painter, self.rect().adjusted(15, 10, -15, -10),
                    self._colors["backdrop"], self._colors["shadow"])
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
-            self.close()
-        elif event.key() == Qt.Key_Left:
-            self._prev_prayer()
-        elif event.key() == Qt.Key_Right:
-            self._next_prayer()
-        else:
-            super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -320,7 +313,15 @@ class PrayerWindow(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = None
-            self._clamp_to_screen()
+            self._fit_window(self._screen_at_center())  # sized for the screen it was dropped on
+
+    def _screen_at_center(self):
+        return QApplication.screenAt(self.frameGeometry().center()) or self.screen() or QApplication.primaryScreen()
+
+    def refit(self):
+        """The screen changed (resolution, scaling, unplugged): size and place it for its screen."""
+        if self._placed and self._drag_pos is None:
+            self._fit_window(self._screen_at_center())
 
 
 if __name__ == "__main__":

@@ -4,38 +4,46 @@
         "versions": [
             {
                 "name": "The Arabic Bible",
-                "abbreviation": "ar_svd"
+                "abbreviation": "ar_svd",
+                "license": "Public Domain",
+                "year": "1865",
+                "source": "https://github.com/thiagobodruk/bible"
             }
         ]
     },
     {
-        "language": "Chinese",
+        "language": "Czech",
         "versions": [
             {
-                "name": "Chinese Union Version",
-                "abbreviation": "zh_cuv"
-            },
-            {
-                "name": "New Chinese Version",
-                "abbreviation": "zh_ncv"
+                "name": "Bible kralická 1613",
+                "abbreviation": "cs_kralicka",
+                "license": "Public Domain",
+                "year": "1613",
+                "source": "https://ebible.org/ces1613/"
             }
         ]
     },
     {
-        "language": "German",
+        "language": "Danish",
         "versions": [
             {
-                "name": "Schlachter",
-                "abbreviation": "de_schlachter"
+                "name": "Bibelen 1871/1907",
+                "abbreviation": "da_1871",
+                "license": "Public Domain",
+                "year": "1871/1907",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=DaOT1871NT1907"
             }
         ]
     },
     {
-        "language": "Greek",
+        "language": "Dutch",
         "versions": [
             {
-                "name": "Modern Greek",
-                "abbreviation": "el_greek"
+                "name": "De Heilige Schrift 1917",
+                "abbreviation": "nl_sv1917",
+                "license": "Public Domain",
+                "year": "1917",
+                "source": "https://ebible.org/nld/"
             }
         ]
     },
@@ -44,35 +52,59 @@
         "versions": [
             {
                 "name": "American Standard Version",
-                "abbreviation": "en_asv"
+                "abbreviation": "en_asv",
+                "license": "Public Domain",
+                "year": "1901",
+                "source": "https://github.com/scrollmapper/bible_databases"
             },
             {
                 "name": "Basic English",
-                "abbreviation": "en_bbe"
+                "abbreviation": "en_bbe",
+                "license": "Public Domain",
+                "year": "1965",
+                "source": "https://github.com/thiagobodruk/bible"
             },
             {
                 "name": "Darby Translation",
-                "abbreviation": "en_darby"
+                "abbreviation": "en_darby",
+                "license": "Public Domain",
+                "year": "1890",
+                "source": "https://ebible.org/engDBY/"
             },
             {
                 "name": "Geneva Bible",
-                "abbreviation": "en_geneva"
+                "abbreviation": "en_geneva",
+                "license": "Public Domain",
+                "year": "1599",
+                "source": "https://github.com/scrollmapper/bible_databases"
             },
             {
                 "name": "King James Version",
-                "abbreviation": "en_kjv"
+                "abbreviation": "en_kjv",
+                "license": "Public Domain",
+                "year": "1769",
+                "source": "https://github.com/thiagobodruk/bible"
             },
             {
                 "name": "Webster's Bible",
-                "abbreviation": "en_webster"
+                "abbreviation": "en_webster",
+                "license": "Public Domain",
+                "year": "1833",
+                "source": "https://github.com/scrollmapper/bible_databases"
             },
             {
                 "name": "Wycliffe Bible",
-                "abbreviation": "en_wycliffe"
+                "abbreviation": "en_wycliffe",
+                "license": "CC BY-SA 4.0",
+                "year": "c. 1395",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=Wycliffe"
             },
             {
                 "name": "Young's Literal Translation",
-                "abbreviation": "en_ylt"
+                "abbreviation": "en_ylt",
+                "license": "Public Domain",
+                "year": "1898",
+                "source": "https://github.com/scrollmapper/bible_databases"
             }
         ]
     },
@@ -81,16 +113,10 @@
         "versions": [
             {
                 "name": "Esperanto",
-                "abbreviation": "eo_esperanto"
-            }
-        ]
-    },
-    {
-        "language": "Spanish",
-        "versions": [
-            {
-                "name": "Reina Valera",
-                "abbreviation": "es_rvr"
+                "abbreviation": "eo_esperanto",
+                "license": "Public Domain",
+                "year": "1926",
+                "source": "https://github.com/thiagobodruk/bible"
             }
         ]
     },
@@ -99,11 +125,10 @@
         "versions": [
             {
                 "name": "Finnish Bible",
-                "abbreviation": "fi_finnish"
-            },
-            {
-                "name": "Pyhä Raamattu",
-                "abbreviation": "fi_pr"
+                "abbreviation": "fi_finnish",
+                "license": "Public Domain",
+                "year": "1776",
+                "source": "https://github.com/thiagobodruk/bible"
             }
         ]
     },
@@ -111,17 +136,131 @@
         "language": "French",
         "versions": [
             {
-                "name": "La Bible de l'Épée",
-                "abbreviation": "fr_apee"
+                "name": "Louis Segond 1910",
+                "abbreviation": "fr_lsg",
+                "license": "Public Domain",
+                "year": "1910",
+                "source": "https://ebible.org/fraLSG/"
             }
         ]
     },
     {
-        "language": "Korean",
+        "language": "German",
         "versions": [
             {
-                "name": "Korean Version",
-                "abbreviation": "ko_ko"
+                "name": "Lutherbibel 1912",
+                "abbreviation": "de_luther",
+                "license": "Public Domain",
+                "year": "1912",
+                "source": "https://ebible.org/deu1912/"
+            }
+        ]
+    },
+    {
+        "language": "Greek",
+        "versions": [
+            {
+                "name": "Vamvas Bible 1850",
+                "abbreviation": "el_greek",
+                "license": "Public Domain",
+                "year": "1850",
+                "source": "https://github.com/thiagobodruk/bible"
+            }
+        ]
+    },
+    {
+        "language": "Hebrew",
+        "versions": [
+            {
+                "name": "Hebrew Bible with Delitzsch NT",
+                "abbreviation": "he_delitzsch",
+                "license": "Public Domain",
+                "year": "1877",
+                "source": "https://ebible.org/heb/"
+            }
+        ]
+    },
+    {
+        "language": "Hindi",
+        "versions": [
+            {
+                "name": "Indian Revised Version",
+                "abbreviation": "hi_irv",
+                "license": "CC BY-SA 4.0",
+                "year": "2019",
+                "source": "https://ebible.org/hin2017/"
+            }
+        ]
+    },
+    {
+        "language": "Hungarian",
+        "versions": [
+            {
+                "name": "Károli Biblia 1908",
+                "abbreviation": "hu_karoli",
+                "license": "Public Domain",
+                "year": "1908",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=HunKar"
+            }
+        ]
+    },
+    {
+        "language": "Italian",
+        "versions": [
+            {
+                "name": "Riveduta 1927",
+                "abbreviation": "it_riveduta",
+                "license": "Public Domain",
+                "year": "1927",
+                "source": "https://ebible.org/ita1927/"
+            }
+        ]
+    },
+    {
+        "language": "Japanese",
+        "versions": [
+            {
+                "name": "Bungo-yaku 1887/1917",
+                "abbreviation": "ja_bungo",
+                "license": "Public Domain",
+                "year": "1887/1917",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=JapBungo"
+            }
+        ]
+    },
+    {
+        "language": "Latin",
+        "versions": [
+            {
+                "name": "Vulgata Clementina 1598",
+                "abbreviation": "la_vulgate",
+                "license": "Public Domain",
+                "year": "1598",
+                "source": "https://ebible.org/latVUC/"
+            }
+        ]
+    },
+    {
+        "language": "Persian",
+        "versions": [
+            {
+                "name": "Old Persian Version",
+                "abbreviation": "fa_opv",
+                "license": "Public Domain",
+                "year": "1895",
+                "source": "https://ebible.org/pesOPV/"
+            }
+        ]
+    },
+    {
+        "language": "Polish",
+        "versions": [
+            {
+                "name": "Biblia Gdańska 1881",
+                "abbreviation": "pl_gdanska",
+                "license": "Public Domain",
+                "year": "1881",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=PolGdanska"
             }
         ]
     },
@@ -129,25 +268,11 @@
         "language": "Portuguese",
         "versions": [
             {
-                "name": "Almeida Revisada Imprensa Bíblica",
-                "abbreviation": "pt_aa"
-            },
-            {
-                "name": "Almeida Corrigida e Revisada Fiel",
-                "abbreviation": "pt_acf"
-            },
-            {
-                "name": "Nova Versão Internacional",
-                "abbreviation": "pt_nvi"
-            }
-        ]
-    },
-    {
-        "language": "Romanian",
-        "versions": [
-            {
-                "name": "Versiunea Dumitru Cornilescu",
-                "abbreviation": "ro_cornilescu"
+                "name": "Almeida 1911",
+                "abbreviation": "pt_almeida",
+                "license": "Public Domain",
+                "year": "1911",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=PorAlmeida1911"
             }
         ]
     },
@@ -156,7 +281,82 @@
         "versions": [
             {
                 "name": "Синодальный перевод",
-                "abbreviation": "ru_synodal"
+                "abbreviation": "ru_synodal",
+                "license": "Public Domain",
+                "year": "1876",
+                "source": "https://github.com/thiagobodruk/bible"
+            }
+        ]
+    },
+    {
+        "language": "Spanish",
+        "versions": [
+            {
+                "name": "Reina Valera",
+                "abbreviation": "es_rvr",
+                "license": "Public Domain",
+                "year": "1909",
+                "source": "https://github.com/thiagobodruk/bible"
+            }
+        ]
+    },
+    {
+        "language": "Swahili",
+        "versions": [
+            {
+                "name": "Biblia Takatifu ULB",
+                "abbreviation": "sw_ulb",
+                "license": "CC BY-SA 4.0",
+                "year": "2019",
+                "source": "https://ebible.org/swhulb/"
+            }
+        ]
+    },
+    {
+        "language": "Swedish",
+        "versions": [
+            {
+                "name": "Bibeln 1917",
+                "abbreviation": "sv_1917",
+                "license": "Public Domain",
+                "year": "1917",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=Swe1917"
+            }
+        ]
+    },
+    {
+        "language": "Tagalog",
+        "versions": [
+            {
+                "name": "Ang Biblia 1905",
+                "abbreviation": "tl_angbiblia",
+                "license": "Public Domain",
+                "year": "1905",
+                "source": "https://www.crosswire.org/sword/modules/ModInfo.jsp?modName=TagAngBiblia"
+            }
+        ]
+    },
+    {
+        "language": "Tamil",
+        "versions": [
+            {
+                "name": "Indian Revised Version",
+                "abbreviation": "ta_irv",
+                "license": "CC BY-SA 4.0",
+                "year": "2019",
+                "source": "https://ebible.org/tam2017/"
+            }
+        ]
+    },
+    {
+        "language": "Ukrainian",
+        "versions": [
+            {
+                "name": "Kulish Bible 1905",
+                "abbreviation": "uk_kulish",
+                "license": "Public Domain",
+                "year": "1905",
+                "source": "https://ebible.org/ukr1871/"
             }
         ]
     },
@@ -165,7 +365,10 @@
         "versions": [
             {
                 "name": "Tiếng Việt",
-                "abbreviation": "vi_vietnamese"
+                "abbreviation": "vi_vietnamese",
+                "license": "Public Domain",
+                "year": "1923/1925",
+                "source": "https://github.com/thiagobodruk/bible"
             }
         ]
     }

@@ -1,7 +1,9 @@
 import sys
 import os
 import html
+import re
 import time
+import threading
 import getpass
 import datetime
 import logging
@@ -13,27 +15,39 @@ from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QPushButton, QHBoxLayout, QColorDialog
 )
 from PySide6.QtGui import (
-    QFont, QPainter, QColor, QPen, QIcon, QPixmap,
-    QAction, QActionGroup, QGuiApplication
+    QFont, QPainter, QColor,
+    QAction, QActionGroup, QGuiApplication, QDesktopServices
 )
 from PySide6.QtCore import (
-    Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, Signal, qInstallMessageHandler, QtMsgType
+    Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, Signal, qInstallMessageHandler, QtMsgType,
+    QLockFile, QDir, QUrl
 )
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from paths import APP_DIR, FROZEN, folder_writable, read_text, write_text
+import crash_log
+from version import VERSION, REPO
+from verses import VerseList, is_rtl
+from tray_icon import make_tray_icon, taskbar_is_light
+import updater
+from updater import UpdateChecker, UpdateSettings
 from bible_loader import (
     get_random_passage, get_verse_of_the_day, get_available_translations,
-    get_translation_info
+    get_translation_info, get_short_name, get_translation_name, REPLACED
 )
 from prayer_window import PrayerWindow
-from menu_strings import get_string, get_available_languages, get_translated_language_name
+from menu_strings import get_string, get_available_languages, get_translated_language_name, install_qt_translator
 from colors import (
     get_colors, set_color, DEFAULT_COLORS, paint_card, rgba as _rgba, separator_style as _separator_style
 )
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RANDOM_TRANSLATION = "random"
 MODE_INTERVALS = {"hourly": 3600000, "random": 900000}  # daily is scheduled for midnight
 MIN_VERSE_PT = 10
+HISTORY_SIZE = 100
+RTL_MENU_LANGUAGES = ("ar", "fa", "he")  # menus and windows read from right to left
+# Where a reader can suggest a better wording for a machine-translated menu
+TRANSLATION_ISSUE_URL = f"https://github.com/{REPO}/issues/new?title=Menu%20translation%20({{lang}})"
+READ_ONLY_CHECK_DELAY_MS = 5000  # after the tray icon is up, before the first update check
 REF_GAP, VERSE_GAP = 12, 16  # space above and below the separator
 VERSE_LINE_HEIGHT = 120  # percent
 
@@ -61,21 +75,42 @@ if sys.platform == "win32":
     SWP_NOMOVE = 0x0002
     SWP_NOACTIVATE = 0x0010
     SW_SHOWNOACTIVATE = 4
+    WM_SETTINGCHANGE = 0x001A
+    WM_ENDSESSION = 0x0016
     DESKTOP_CLASSES = ("WorkerW", "Progman")
 
 
 class BibleWidget(QWidget):
+    _image_saved = Signal(object, bool)  # (saved path or None, image is on the clipboard)
+
     def __init__(self):
         super().__init__()
+        self._image_saved.connect(self._on_image_saved)
+        self._save_threads = []
+        # Quitting (Exit, an update, Windows shutting down) first lets image files finish
+        QApplication.instance().aboutToQuit.connect(self._finish_saves)
         self.setWindowTitle("Bible Widget")
         self._verbose = "--verbose" in sys.argv
         self._start_time = datetime.datetime.now()
         self._quote_count = 0
         self._translation = None
         self._shown_translation = ""
+        self._shown_passage = None  # (reference, text) on show; the labels can hold trial text
+        self._error_shown = False  # the "No verses found" card is showing
+        self._toast_action = None  # what clicking the current tray notification does
         self._menu_lang = "en"
         self._prayer_windows = []
         self._color_dialog = None
+        self._verses_window = None
+        self._context_menu = None
+        self._favorites = VerseList(os.path.join(APP_DIR, "favorites.json"))
+        self._history = VerseList(os.path.join(APP_DIR, "history.json"), cap=HISTORY_SIZE)
+        self._history_pos = 0  # 0 = the newest history entry; Back steps to older ones
+        self._about_window = None
+        self._update_window = None
+        self._available_update = None
+        self._manual_check = False
+        self._update_settings = UpdateSettings(APP_DIR)
         # Tool: no taskbar button. DoesNotAcceptFocus: clicking it never steals focus
         # (WS_EX_NOACTIVATE). Not WindowStaysOnBottomHint: Qt would force the window back
         # to the bottom on every z-order change, so it could never rise after Win+D.
@@ -127,29 +162,66 @@ class BibleWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timer)
+        # The timer may not count time the PC spends asleep, so also compare the clock:
+        # after waking past midnight (Daily) or the hour, the new verse comes straight away
+        self._due = None
+        self._wake_check = QTimer(self)
+        self._wake_check.timeout.connect(self._check_overdue)
+        self._wake_check.start(30000)
 
         self._setup_tray()
         self._repair_startup()
+        QTimer.singleShot(READ_ONLY_CHECK_DELAY_MS, self._warn_if_read_only)
 
         scr = self._screen_for_snap().geometry()
         self._base_size = (int(scr.width() * 0.2), int(scr.height() * 0.3))
         self.resize(*self._base_size)
         self._place()
 
+        # A screen added, removed or changed (resolution, scaling): size and place the card again
         app = QApplication.instance()
-        app.screenAdded.connect(lambda _: QTimer.singleShot(1000, self._place))
-        app.screenRemoved.connect(lambda _: QTimer.singleShot(1000, self._place))
+        for screen in app.screens():
+            screen.geometryChanged.connect(self._on_screens_changed)
+        app.screenAdded.connect(lambda screen: (screen.geometryChanged.connect(self._on_screens_changed),
+                                                self._on_screens_changed()))
+        app.screenRemoved.connect(lambda _: self._on_screens_changed())
 
-        self.show_new_verse()
+        try:
+            self.show_new_verse()
+        except Exception:
+            # Never fail to start over one bad verse; the refresh timer tries again
+            log.exception("Could not show the first verse")
+            self._set_passage("", self._s("No verses found"))
+        self._place()  # the first verse may have made the card taller or wider
         self._schedule_next()
+
+        self._updater = UpdateChecker(self._update_settings, self)
+        self._updater.found.connect(self._on_update_found)
+        self._updater.up_to_date.connect(lambda: self._on_update_result(True))
+        self._updater.failed.connect(lambda _: self._on_update_result(False))
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(lambda: self._check_for_updates(manual=False))
+        self._update_timer.start(updater.CHECK_INTERVAL_MS)
+        QTimer.singleShot(updater.FIRST_CHECK_DELAY_MS, lambda: self._check_for_updates(manual=False))
 
     def _s(self, key):
         return get_string(key, self._menu_lang)
 
     def _build_menu(self):
         """Build the tray menu with translated strings."""
-        s = self._s
+        s = lambda key: self._s(key).replace("&", "&&")  # "&" would become a shortcut marker
+        # Arabic, Persian and Hebrew menus and windows run right to left (checkmarks and submenu
+        # arrows on the other side), like Windows itself in those languages
+        QApplication.setLayoutDirection(Qt.RightToLeft if self._menu_lang in RTL_MENU_LANGUAGES
+                                        else Qt.LeftToRight)
+        install_qt_translator(self._menu_lang)  # Qt's own (human-made) translations of OK, Cancel...
         menu = QMenu()
+
+        if self._available_update is not None:
+            update_action = QAction(s("Update to {version}...").format(version=self._available_update["version"]), menu)
+            update_action.triggered.connect(self._open_update_window)
+            menu.addAction(update_action)
+            menu.addSeparator()
 
         mode_group = QActionGroup(menu)
         self._mode_actions = {}
@@ -167,8 +239,12 @@ class BibleWidget(QWidget):
         menu.addAction(change_action)
 
         copy_action = QAction(s("Copy Verse"), menu)
-        copy_action.triggered.connect(self._copy_verse)
+        copy_action.triggered.connect(lambda: self._copy_verse())
         menu.addAction(copy_action)
+
+        verses_action = QAction(s("Verses..."), menu)
+        verses_action.triggered.connect(lambda: self._open_verses("find"))
+        menu.addAction(verses_action)
 
         menu.addSeparator()
 
@@ -185,7 +261,7 @@ class BibleWidget(QWidget):
 
         for abbr, name, lang in get_available_translations():
             translated_lang = get_translated_language_name(lang, self._menu_lang)
-            action = QAction(f"{name} ({translated_lang})", trans_menu)
+            action = QAction(f"{name} ({translated_lang})".replace("&", "&&"), trans_menu)
             action.setCheckable(True)
             action.setChecked(abbr == self._translation)
             action.triggered.connect(lambda _, a=abbr: self._set_translation(a))
@@ -202,6 +278,14 @@ class BibleWidget(QWidget):
             action.triggered.connect(lambda _, c=code: self._set_language(c))
             lang_group.addAction(action)
             lang_menu.addAction(action)
+        if self._menu_lang != "en":
+            # Menus other than English are machine translations (apart from the parts taken from
+            # human sources): say so, in English, with a way to suggest a better wording
+            lang_menu.addSeparator()
+            note = QAction("Machine-translated menu: suggest a fix...", lang_menu)
+            note.triggered.connect(lambda: QDesktopServices.openUrl(
+                QUrl(TRANSLATION_ISSUE_URL.format(lang=self._menu_lang))))
+            lang_menu.addAction(note)
 
         # Prayers submenu
         prayers_menu = menu.addMenu(s("Prayers"))
@@ -222,7 +306,9 @@ class BibleWidget(QWidget):
         startup_menu = menu.addMenu(s("Run on Startup"))
         startup_group = QActionGroup(startup_menu)
         current = self._startup_mode()
-        for mode, label in ((None, "Off"), ("silent", "Silent (no terminal)"), ("console", "With console")):
+        modes = ((None, "Off"), ("silent", "On")) if FROZEN else \
+            ((None, "Off"), ("silent", "Silent (no terminal)"), ("console", "With console"))
+        for mode, label in modes:
             action = QAction(s(label), startup_menu)
             action.setCheckable(True)
             action.setChecked(current == mode)
@@ -250,35 +336,60 @@ class BibleWidget(QWidget):
         snap_action.toggled.connect(self._toggle_snap)
         menu.addAction(snap_action)
 
+        menu.addSeparator()
+        check_action = QAction(s("Check for Updates"), menu)
+        check_action.triggered.connect(lambda: self._check_for_updates(manual=True))
+        menu.addAction(check_action)
+        about_action = QAction(s("About Bible Widget"), menu)
+        about_action.triggered.connect(self._open_about)
+        menu.addAction(about_action)
+
         exit_action = QAction(s("Exit"), menu)
-        exit_action.triggered.connect(self._exit_app)
+        exit_action.triggered.connect(lambda: self._exit_app())
         menu.addAction(exit_action)
 
         return menu
 
-    def _make_tray_pixmap(self):
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        color = QColor(self._text_color)
-        color.setAlpha(255)
-        painter.setPen(QPen(color, 2))
-        painter.drawLine(8, 1, 8, 15)
-        painter.drawLine(3, 5, 13, 5)
-        painter.end()
-        return pixmap
-
     def _setup_tray(self):
         self._tray_icon = QSystemTrayIcon(self)
-        self._tray_icon.setIcon(QIcon(self._make_tray_pixmap()))
-        self._tray_icon.setToolTip("Bible Widget")
+        self._tray_light = taskbar_is_light()
+        self._tray_icon.setIcon(make_tray_icon(self._tray_light))
+        QGuiApplication.styleHints().colorSchemeChanged.connect(lambda _: self._refresh_tray_icon())
+        self._tray_icon.setToolTip(f"Bible Widget {VERSION}")
         self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.messageClicked.connect(self._on_toast_clicked)
         self._menu = self._build_menu()
         self._tray_icon.setContextMenu(self._menu)
         self._tray_icon.show()
 
+    def _refresh_tray_icon(self):
+        """Redraw the tray icon if the taskbar turned light or dark. Windows can switch the taskbar
+        alone (Personalization, Colors, Custom), which Qt's colour scheme does not follow."""
+        light = taskbar_is_light()
+        if light != self._tray_light:
+            self._tray_light = light
+            self._tray_icon.setIcon(make_tray_icon(light))
+
+    def nativeEvent(self, event_type, message):
+        if sys.platform == "win32" and event_type == b"windows_generic_MSG":
+            try:
+                msg = wintypes.MSG.from_address(int(message))
+                if msg.message == WM_SETTINGCHANGE:
+                    QTimer.singleShot(0, self._refresh_tray_icon)
+                elif msg.message == WM_ENDSESSION and msg.wParam:
+                    # Windows ends the app right after this: not a crash
+                    crash_log.mark_ended("Windows is shutting down or signing out")
+            except (TypeError, ValueError):
+                pass
+        return super().nativeEvent(event_type, message)
+
     def _rebuild_menu(self):
+        if self._menu is not None and self._menu.isVisible():
+            # Not under the user's pointer: rebuild once the open menu closes
+            if not self._menu.property("rebuild_pending"):
+                self._menu.setProperty("rebuild_pending", True)
+                self._menu.aboutToHide.connect(lambda: QTimer.singleShot(0, self._rebuild_menu))
+            return
         old = self._menu
         self._menu = self._build_menu()
         self._tray_icon.setContextMenu(self._menu)
@@ -335,6 +446,41 @@ class BibleWidget(QWidget):
         self._menu_lang = code
         self._save_language_preference()
         self._rebuild_menu()
+        if self._error_shown:  # the "No verses found" card, in the new language
+            self._set_passage("", self._s("No verses found"))
+            self._shown_passage = ("", self._s("No verses found"))
+        if QApplication.activeModalWidget() is not None:
+            return  # a message box or colour picker is open: leave the windows as they are
+        if self._verses_window is not None:
+            self._verses_window.close()
+        about = self._about_window
+        if about is not None and about.isVisible():
+            pos = about.pos()
+            about.close()
+            self._about_window = None
+            self._open_about()
+            self._about_window.move(pos)
+        update = self._update_window
+        if update is not None and update.isVisible() and not (update._downloading or update._installing):
+            pos = update.pos()
+            update.close()
+            self._update_window = None
+            self._open_update_window()
+            if self._update_window is not None:
+                self._update_window.move(pos)
+        dialog = self._color_dialog
+        if dialog is not None and dialog.isVisible():
+            pos, pending = dialog.pos(), dict(dialog._pending)  # colours picked but not applied stay
+            dialog.close()
+            self._color_dialog = None
+            self._open_color_settings(pending)
+            self._color_dialog.move(pos)
+        for window in list(self._prayer_windows):
+            if window.isVisible():
+                pos, prayer_id, abbr = window.pos(), window._prayer_id, window._translation_abbr
+                window.close()
+                self._forget_prayer(window)
+                self._open_prayer(prayer_id, abbr, reuse=False).move(pos)
 
     def _apply_colors(self):
         self._colors = get_colors()
@@ -342,7 +488,6 @@ class BibleWidget(QWidget):
         self._separator_color = self._colors["separator"]
         self._apply_label_styles()
 
-        self._tray_icon.setIcon(QIcon(self._make_tray_pixmap()))
         self.update()
 
         for window in self._prayer_windows:
@@ -355,22 +500,33 @@ class BibleWidget(QWidget):
         self.verse_label.setStyleSheet(f"color: {_rgba(self._text_color)};")
         self.separator.setStyleSheet(_separator_style(self._separator_color))
 
-    def _open_color_settings(self):
+    @staticmethod
+    def _bring_to_front(window):
+        """Show a window the user asked for, restoring it if it was minimized (Win+D
+        minimizes open dialogs, and raise_() alone leaves a minimized window hidden)."""
+        window.setWindowState(window.windowState() & ~Qt.WindowMinimized)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _forget(self, attr, window):
+        """A window has gone: forget it, unless it was already replaced by a new one."""
+        if getattr(self, attr, None) is window:
+            setattr(self, attr, None)
+
+    def _open_color_settings(self, colors=None):
         if self._color_dialog is not None and self._color_dialog.isVisible():
-            self._color_dialog.raise_()
-            self._color_dialog.activateWindow()
+            self._bring_to_front(self._color_dialog)
             return
-        dlg = ColorSettingsDialog(get_colors(), self._s)
+        dlg = ColorSettingsDialog(colors or get_colors(), self._s)
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.colors_changed.connect(self._apply_colors)
-        dlg.destroyed.connect(lambda: setattr(self, "_color_dialog", None))
+        dlg.destroyed.connect(lambda _=None, d=dlg: self._forget("_color_dialog", d))
         dlg.adjustSize()
         geo = self._screen_for_snap().availableGeometry()
         dlg.move(geo.center() - dlg.rect().center())
         self._color_dialog = dlg
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
+        self._bring_to_front(dlg)
 
     def _bring_back(self):
         """Show the widget and lift it above other windows for a few seconds."""
@@ -396,7 +552,7 @@ class BibleWidget(QWidget):
     def _set_translation(self, abbr):
         self._translation = abbr
         self._save_translation_preference()
-        self.show_new_verse(manual=True)
+        self.show_new_verse()
 
     # ----- Run on Startup -----
 
@@ -421,9 +577,22 @@ class BibleWidget(QWidget):
         return raw.decode("mbcs" if sys.platform == "win32" else "latin-1", errors="replace")
 
     def _startup_mode(self):
+        """How Run on Startup starts this copy, or None. A launcher that starts another copy
+        (such as an older version in another folder) does not count as on."""
         content = self._read_startup_file()
-        if content is None:
+        if content is None or self._starts_other_copy(content):
             return None
+        return self._launcher_mode(content)
+
+    def _starts_other_copy(self, content):
+        target = self._startup_target(content)
+        return bool(target) and os.path.normcase(os.path.dirname(target)) != os.path.normcase(APP_DIR)
+
+    @staticmethod
+    def _launcher_mode(content):
+        """The mode a launcher's text was written for."""
+        if FROZEN:
+            return "silent"
         if "mode=console" in content:
             return "console"
         if "mode=silent" in content or "pythonw" in content or "pyw" in content:
@@ -432,7 +601,11 @@ class BibleWidget(QWidget):
 
     def _startup_content(self, mode):
         script = os.path.join(APP_DIR, "widget_window.py")
-        if mode == "silent":
+        if FROZEN:
+            mode = "silent"
+            cmd = f'""{sys.executable}""'
+            show = 1
+        elif mode == "silent":
             pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
             exe = f'""{pythonw}""' if os.path.isfile(pythonw) else "pyw -3"
             cmd = f'{exe} ""{script}""'
@@ -451,7 +624,11 @@ class BibleWidget(QWidget):
         p = self._startup_file_path()
         try:
             if mode is None:
-                if os.path.exists(p):
+                content = self._read_startup_file()
+                if content is not None and self._starts_other_copy(content) \
+                        and os.path.exists(self._startup_target(content)):
+                    log.info("Run on Startup: the launcher starts another copy; leaving it")
+                elif os.path.exists(p):
                     os.remove(p)
             else:
                 os.makedirs(self._startup_dir(), exist_ok=True)
@@ -462,12 +639,24 @@ class BibleWidget(QWidget):
             log.exception("Could not update the startup launcher")
         self._rebuild_menu()
 
+    @staticmethod
+    def _startup_target(content):
+        """The widget_window.py or BibleWidget.exe a launcher starts, or None."""
+        found = re.findall(r'""([^"]*?(?:widget_window\.py|BibleWidget\.exe))""', content, re.IGNORECASE)
+        return found[-1] if found else None
+
     def _repair_startup(self):
-        """Rewrite the startup launcher only if it no longer matches this install."""
+        """Rewrite the startup launcher only if it no longer matches this install. A launcher
+        that starts another copy that still exists (say, the exe next to a source copy) is left
+        alone, so two copies never fight over it."""
         content = self._read_startup_file()
         if content is None:
             return
-        mode = self._startup_mode()
+        target = self._startup_target(content)
+        if self._starts_other_copy(content) and os.path.exists(target):
+            log.info("Startup launcher starts another copy (%s); leaving it", target)
+            return
+        mode = self._launcher_mode(content)  # the copy it started is gone: start this one the same way
         if content != self._startup_content(mode):
             log.info("Repairing startup launcher (mode=%s)", mode)
             self._set_startup(mode)
@@ -477,55 +666,52 @@ class BibleWidget(QWidget):
     def _load_translation_preference(self):
         try:
             if os.path.isfile(self._translation_path):
-                with open(self._translation_path, "r", encoding="utf-8") as f:
-                    val = f.read().strip()
+                val = read_text(self._translation_path).strip()
+                available = {a for a, _, _ in get_available_translations()}
+                if val not in available:
+                    val = REPLACED.get(val, val)  # a translation taken out in 2.1.0: its replacement
                 if val == RANDOM_TRANSLATION:
                     self._translation = None
-                elif val in {a for a, _, _ in get_available_translations()}:
+                elif val in available:
                     self._translation = val
-        except OSError:
+        except (OSError, ValueError):  # unreadable: keep the default
             pass
 
     def _save_translation_preference(self):
         try:
-            with open(self._translation_path, "w", encoding="utf-8") as f:
-                f.write(self._translation or RANDOM_TRANSLATION)
+            write_text(self._translation_path, self._translation or RANDOM_TRANSLATION)
         except OSError:
-            pass
+            log.warning("Could not save the translation choice", exc_info=True)
 
     def _load_language_preference(self):
         try:
             if os.path.isfile(self._language_path):
-                with open(self._language_path, "r", encoding="utf-8") as f:
-                    val = f.read().strip()
+                val = read_text(self._language_path).strip()
                 if val and val in dict(get_available_languages()):
                     self._menu_lang = val
-        except OSError:
+        except (OSError, ValueError):  # unreadable: keep the default
             pass
 
     def _save_language_preference(self):
         try:
-            with open(self._language_path, "w", encoding="utf-8") as f:
-                f.write(self._menu_lang)
+            write_text(self._language_path, self._menu_lang)
         except OSError:
-            pass
+            log.warning("Could not save the menu language", exc_info=True)
 
     def _load_mode(self):
         try:
             if os.path.isfile(self._mode_path):
-                with open(self._mode_path, "r", encoding="utf-8") as f:
-                    val = f.read().strip()
+                val = read_text(self._mode_path).strip()
                 if val in ("hourly", "daily", "random"):
                     self._mode = val
-        except OSError:
+        except (OSError, ValueError):  # unreadable: keep the default
             pass
 
     def _save_mode(self):
         try:
-            with open(self._mode_path, "w", encoding="utf-8") as f:
-                f.write(self._mode)
+            write_text(self._mode_path, self._mode)
         except OSError:
-            pass
+            log.warning("Could not save the mode", exc_info=True)
 
     # ----- Refresh timing -----
 
@@ -543,30 +729,45 @@ class BibleWidget(QWidget):
         else:
             ms = MODE_INTERVALS.get(self._mode, MODE_INTERVALS["hourly"])
         self._timer.start(ms)
+        self._due = time.time() + ms / 1000
+
+    def _check_overdue(self):
+        if self._due is not None and self._timer.isActive() and time.time() > self._due + 5:
+            self._timer.stop()
+            self._on_timer()
 
     def _on_timer(self):
-        self.show_new_verse()
-        self._schedule_next()
+        try:
+            self.show_new_verse()
+        finally:
+            self._schedule_next()
 
-    def _open_prayer(self, prayer_id="lords-prayer"):
-        """Open a prayer window using the current (or last shown) translation."""
-        abbr = self._translation or self._shown_translation or "en_kjv"
-        window = PrayerWindow(abbr, prayer_id, self._menu_lang)
+    def _open_prayer(self, prayer_id="lords-prayer", abbr=None, reuse=True):
+        """Open a prayer window using the current (or last shown) translation. A prayer already
+        open in that translation is brought to the front instead of opened twice."""
+        abbr = abbr or self._translation or self._shown_translation or "en_kjv"
+        for window in self._prayer_windows if reuse else ():
+            if (window._prayer_id, window._translation_abbr, window._lang) == (prayer_id, abbr, self._menu_lang):
+                self._bring_to_front(window)
+                return window
+        window = PrayerWindow(abbr, prayer_id, self._menu_lang, screen=self._screen_for_snap())
         window.setAttribute(Qt.WA_DeleteOnClose)
         self._prayer_windows.append(window)
         window.destroyed.connect(lambda _=None, w=window: self._forget_prayer(w))
         window.show()
+        return window
 
     def _forget_prayer(self, window):
         if window in self._prayer_windows:
             self._prayer_windows.remove(window)
 
-    def _exit_app(self):
-        try:
-            if os.path.exists(self._pid_path):
-                os.remove(self._pid_path)
-        except OSError:
-            pass
+    def _exit_app(self, reason="Exit was chosen"):
+        window = self._update_window
+        if window is not None and window._installing:
+            # The update is being unpacked: quit once it is clear whether the installer took over
+            window.quit_when_done = True
+            return
+        crash_log.end_run(reason, APP_DIR)  # also removes widget.pid
         self._tray_icon.hide()
         QApplication.quit()
 
@@ -615,16 +816,279 @@ class BibleWidget(QWidget):
         self._apply_label_styles()
 
     def show_new_verse(self, manual=False):
-        if self._mode == "daily" and not manual:
-            ref, text, abbr = get_verse_of_the_day(self._translation, with_translation=True, fits=self._fits)
-        else:
-            ref, text, abbr = get_random_passage(self._translation, with_translation=True, fits=self._fits)
+        try:
+            if self._mode == "daily" and not manual:
+                ref, text, abbr = get_verse_of_the_day(self._translation, with_translation=True, fits=self._fits)
+            else:
+                ref, text, abbr = get_random_passage(self._translation, with_translation=True, fits=self._fits)
+        except Exception:
+            self._redisplay()  # measuring left trial text on the labels
+            raise
+        self._display(ref, text, abbr)
+
+    def _display(self, ref, text, abbr, record=True):
+        """Show a passage. New passages go into history; Back replays history without recording."""
+        self._error_shown = not abbr and ref == "Error"
+        if self._error_shown:  # no Bible could be loaded: say so in the menu language
+            log.warning("Nothing to show: %s", text)
+            ref, text = "", self._s("No verses found")
         self._shown_translation = abbr
+        self._shown_passage = (ref, text)
         self._set_passage(ref, text)
         self._quote_count += 1
         self._fit_text_size()
+        if record and abbr:
+            self._history.add(ref, text, abbr, unique=False)
+            self._history_pos = 0
+            self._refresh_verses_window()
         if self._verbose:
             self._print_stats()
+
+    def show_passage(self, ref, text, abbr):
+        """Pin a passage picked in the Verses window. It stays until the next refresh."""
+        self._display(ref, text, abbr)
+        self._bring_back()
+
+    def _can_go_back(self):
+        return self._history_pos + 1 < len(self._history.entries)
+
+    def _go_back(self):
+        if not self._can_go_back():
+            return
+        self._history_pos += 1
+        entry = self._history.entries[self._history_pos]
+        self._display(entry["ref"], entry["text"], entry["translation"], record=False)
+
+    def _current(self):
+        ref, text = self._shown_passage or (self.ref_label.text(), self._verse_text)
+        return ref, text, self._shown_translation
+
+    def _redisplay(self):
+        """Put the widget's own passage back, after something measured trial text on it."""
+        if self._has_passage():
+            ref, text, _ = self._current()
+            self._set_passage(ref, text)
+            self._fit_text_size()
+
+    def _has_passage(self):
+        """False while an error message is showing instead of a verse."""
+        return bool(self._shown_translation and self._shown_passage and self._shown_passage[1])
+
+    def _toggle_favorite(self, passage=None):
+        ref, text, abbr = passage or self._current()
+        if not abbr:
+            return
+        if self._favorites.contains(ref, abbr):
+            self._favorites.remove(ref, abbr)
+        else:
+            self._favorites.add(ref, text, abbr)
+        self._refresh_verses_window()
+
+    def _save_image(self, ref=None, text=None, abbr=None):
+        """Save the passage as a card image in Pictures\\Bible Widget and copy it to the clipboard."""
+        if ref is None:
+            if not self._has_passage():
+                return None
+            ref, text, abbr = self._current()
+        QApplication.setOverrideCursor(Qt.WaitCursor)  # making and writing the image takes a moment
+        try:
+            return self._make_and_save_image(ref, text, abbr)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _make_and_save_image(self, ref, text, abbr):
+        """Draw the card and copy it to the clipboard here; the PNG file is written on a worker
+        thread (the slow part), so the widget never freezes. Returns the thread."""
+        from share_image import render_card, copy_to_clipboard
+        try:
+            image = render_card(ref, text, get_translation_name(abbr), get_colors())
+        except Exception:
+            log.exception("Could not make the verse image")
+            self._notify(self._s("Could not save the image"))
+            return None
+        copied = True
+        try:
+            copy_to_clipboard(image)  # first, so a folder problem still leaves the image to paste
+        except Exception:
+            log.exception("Could not copy the verse image")
+            copied = False
+        # Not a daemon thread: quitting waits for the file to be finished
+        thread = threading.Thread(target=self._write_image, args=(image, ref, copied), name="save-image")
+        self._save_threads = [t for t in self._save_threads if t.is_alive()] + [thread]
+        thread.start()
+        return thread
+
+    def _finish_saves(self, timeout=15):
+        """Wait (on quit) for image files still being written, while the widget still exists;
+        otherwise the app could be torn down under a worker that is about to report back."""
+        deadline = time.monotonic() + timeout
+        for thread in self._save_threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self._save_threads = [t for t in self._save_threads if t.is_alive()]
+
+    def _write_image(self, image, ref, copied):
+        """Runs on the worker thread; the result goes back to the UI thread as a queued signal."""
+        from share_image import save_card
+        try:
+            path = save_card(image, ref)
+            log.info("Saved verse image to %s", path)
+        except Exception:
+            log.exception("Could not save the verse image")
+            path = None
+        try:
+            self._image_saved.emit(path, copied)
+        except RuntimeError:
+            pass  # the widget was closed while the file was being written
+
+    def _on_image_saved(self, path, copied):
+        if path is None:
+            self._notify(self._s("The image is on the clipboard, but it could not be saved") if copied
+                         else self._s("Could not save the image"))
+        else:
+            self._notify(self._s("Saved image to {path}").format(path=path),
+                         lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
+
+    def _notify(self, message, on_click=None):
+        """A tray notification. Clicking it runs `on_click` (if any), never another toast's action."""
+        self._toast_action = on_click
+        if self._tray_icon is not None and QSystemTrayIcon.supportsMessages():
+            self._tray_icon.showMessage("Bible Widget", message, self._tray_icon.icon(), 6000)
+
+    def _warn_if_read_only(self):
+        """Settings, favorites and history are kept next to the app. If that folder can't be
+        written (for example under Program Files), say so instead of losing changes silently.
+        Clicking the notification opens the folder."""
+        if folder_writable(APP_DIR):
+            return False
+        log.warning("Cannot write to %s: settings, favorites and history will not be saved", APP_DIR)
+        self._notify(self._s("Settings can't be saved in the Bible Widget folder. "
+                             "Move it somewhere you can write to, such as Documents."),
+                     lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(APP_DIR)))
+        return True
+
+    def _on_toast_clicked(self):
+        action, self._toast_action = self._toast_action, None
+        if action is not None:
+            action()
+
+    # ----- Updates and About -----
+
+    def _check_for_updates(self, manual=False):
+        if not manual and not self._update_settings.auto:
+            return
+        if not manual and self._updater.checking():
+            return  # one is already on its way (Check for Updates, say): its answer will do
+        self._manual_check = manual
+        if manual and self._about_window is not None:
+            self._about_window.set_status(self._s("Checking for updates..."))
+        self._updater.check(manual=manual)
+
+    def _on_update_found(self, release):
+        self._available_update = release
+        self._rebuild_menu()
+        message = self._s("Bible Widget {version} is available").format(version=release["version"])
+        if self._about_window is not None:
+            self._about_window.set_status(message)
+        if self._manual_check:
+            self._open_update_window()
+        else:
+            self._notify(message, self._open_update_window)
+
+    def _on_update_result(self, up_to_date):
+        window = self._update_window
+        busy = window is not None and (window._downloading or window._installing)
+        if up_to_date and self._available_update is not None and not busy:
+            self._clear_update()  # the release on offer was withdrawn, or skipped
+        if not self._manual_check:
+            return
+        text = self._s("You're up to date") if up_to_date else self._s("Couldn't check for updates")
+        if self._about_window is not None and self._about_window.isVisible():
+            self._about_window.set_status(text)
+        else:
+            self._notify(text)
+
+    def _set_auto_update(self, enabled):
+        self._update_settings.auto = bool(enabled)
+        self._update_settings.save()
+
+    def _clear_update(self):
+        self._available_update = None
+        self._rebuild_menu()
+
+    def _open_update_window(self):
+        if self._available_update is None:
+            return
+        old = self._update_window
+        if old is not None and old._release.get("tag") != self._available_update.get("tag") \
+                and not (old._downloading or old._installing):
+            old.close()  # it offers an older release than the one now available
+            self._update_window = None
+        if self._update_window is None:
+            from about_window import UpdateWindow
+            window = UpdateWindow(self, self._available_update)
+            window.setAttribute(Qt.WA_DeleteOnClose)
+            window.destroyed.connect(lambda _=None, w=window: self._forget("_update_window", w))
+            self._update_window = window
+        self._bring_to_front(self._update_window)
+
+    def _open_about(self):
+        if self._about_window is None:
+            from about_window import AboutWindow
+            window = AboutWindow(self)
+            window.setAttribute(Qt.WA_DeleteOnClose)
+            window.destroyed.connect(lambda _=None, w=window: self._forget("_about_window", w))
+            self._about_window = window
+        self._bring_to_front(self._about_window)
+
+    def _open_verses(self, tab="find"):
+        if self._verses_window is None:
+            from verses_window import VersesWindow
+            window = VersesWindow(self)
+            window.setAttribute(Qt.WA_DeleteOnClose)
+            window.destroyed.connect(lambda: setattr(self, "_verses_window", None))
+            window.resize(760, 500)
+            geo = self._screen_for_snap().availableGeometry()
+            window.move(geo.center() - window.rect().center())
+            self._verses_window = window
+        else:
+            self._verses_window.refresh()
+        self._bring_to_front(self._verses_window)
+        self._verses_window.show_tab(tab)
+
+    def _refresh_verses_window(self):
+        if self._verses_window is not None and self._verses_window.isVisible():
+            self._verses_window.refresh()
+
+    def contextMenuEvent(self, event):
+        """Right-click on the widget: quick actions for the verse it shows."""
+        # Menus treat "&" as a shortcut marker, so "Favorites & History" needs "&&" to show it
+        s = lambda key: self._s(key).replace("&", "&&")
+        menu = QMenu(self)
+        back = menu.addAction(s("Back"))
+        back.setEnabled(self._can_go_back())
+        back.triggered.connect(lambda: self._go_back())
+        menu.addAction(s("Next Verse")).triggered.connect(lambda: self.show_new_verse(manual=True))
+        menu.addSeparator()
+        current = self._current()
+        favorite = "Remove from Favorites" if self._favorites.contains(current[0], current[2]) else "Add to Favorites"
+        verse_actions = [
+            menu.addAction(s(favorite)),
+            menu.addAction(s("Copy Verse")),
+            menu.addAction(s("Save as Image")),
+        ]
+        # All three act on the verse the menu was opened on, even if the verse changes meanwhile
+        verse_actions[0].triggered.connect(lambda: self._toggle_favorite(current))
+        verse_actions[1].triggered.connect(lambda: self._copy_verse(current))
+        verse_actions[2].triggered.connect(lambda: self._save_image(*current))
+        for action in verse_actions:
+            action.setEnabled(self._has_passage())  # nothing to keep while an error is showing
+        menu.addSeparator()
+        menu.addAction(s("Find a Verse...")).triggered.connect(lambda: self._open_verses("find"))
+        menu.addAction(s("Favorites & History...")).triggered.connect(lambda: self._open_verses("favorites"))
+        if self._context_menu is not None:
+            self._context_menu.deleteLater()
+        self._context_menu = menu
+        menu.popup(event.globalPos())
 
     def _build_stats_text(self):
         now = datetime.datetime.now()
@@ -637,12 +1101,12 @@ class BibleWidget(QWidget):
         next_time = next_refresh.strftime("%I:%M %p").lstrip("0")
 
         books, verses = get_translation_info(self._shown_translation) if self._shown_translation else (0, 0)
-        names = {a: n for a, n, _ in get_available_translations()}
-        translation = names.get(self._shown_translation, self._shown_translation)
+        translation = get_translation_name(self._shown_translation)
         if self._translation is None:
             translation += " (random)"
 
         return (
+            f"Version:        {VERSION}\n"
             f"Current Quote:  {self.ref_label.text()}\n"
             f"Translation:    {translation}\n"
             f"Mode:           {self._mode.capitalize()}\n"
@@ -660,9 +1124,17 @@ class BibleWidget(QWidget):
         print(self._build_stats_text())
         print("---------------------------------------", flush=True)
 
-    def _copy_verse(self):
-        text = f"{self._verse_text}\n{self.ref_label.text()}"
-        QApplication.clipboard().setText(text)
+    def _copy_verse(self, passage=None):
+        """Copy a passage (the one on the widget by default) as its text, then the reference
+        with the translation, e.g. "John 11:35 (KJV)"."""
+        if passage is None:
+            if not self._has_passage():
+                return
+            passage = self._current()
+        ref, text, abbr = passage
+        short = get_short_name(abbr)
+        QApplication.clipboard().setText(f"{text}\n{ref} ({short})" if short else f"{text}\n{ref}")
+        self._notify(self._s("Verse copied"))
 
     def _show_stats(self):
         msg = QMessageBox()
@@ -689,8 +1161,7 @@ class BibleWidget(QWidget):
     def _load_snap_corner(self):
         try:
             if os.path.isfile(self._corner_path):
-                with open(self._corner_path, "r", encoding="utf-8") as f:
-                    lines = f.read().splitlines()
+                lines = read_text(self._corner_path).splitlines()
                 if lines and lines[0].strip() in ("tl", "tr", "bl", "br"):
                     self._snap_corner = lines[0].strip()
                 if len(lines) >= 2:
@@ -698,25 +1169,36 @@ class BibleWidget(QWidget):
                 if len(lines) >= 3:
                     self._snap_enabled = lines[2].strip() != "off"
                 if len(lines) >= 4 and "," in lines[3]:
-                    x, y = lines[3].split(",", 1)
-                    self._free_pos = QPoint(int(x), int(y))
+                    x, y = (int(n) for n in lines[3].split(",", 1))
+                    if abs(x) < 10 ** 6 and abs(y) < 10 ** 6:  # a real screen position
+                        self._free_pos = QPoint(x, y)
         except (OSError, ValueError):
             pass
 
     def _save_snap_corner(self):
+        enabled = "on" if self._snap_enabled else "off"
+        text = f"{self._snap_corner}\n{self._snap_screen_name}\n{enabled}"
+        if self._free_pos is not None:
+            text += f"\n{self._free_pos.x()},{self._free_pos.y()}"
         try:
-            with open(self._corner_path, "w", encoding="utf-8") as f:
-                enabled = "on" if self._snap_enabled else "off"
-                f.write(f"{self._snap_corner}\n{self._snap_screen_name}\n{enabled}")
-                if self._free_pos is not None:
-                    f.write(f"\n{self._free_pos.x()},{self._free_pos.y()}")
+            write_text(self._corner_path, text)
         except OSError:
-            pass
+            log.warning("Could not save the widget's position", exc_info=True)
 
     def _screen_for_snap(self):
-        if self._snap_screen_name:
-            for s in QApplication.screens():
-                if s.name() == self._snap_screen_name:
+        """The screen the card belongs on. Saved as name@x,y: Windows names a screen after its
+        monitor's model, so two monitors of the same model share a name and only their place
+        tells them apart. A name alone (as 2.0.2 saved it), or a screen since moved, is found by
+        its name."""
+        saved = self._snap_screen_name
+        if saved:
+            screens = QApplication.screens()
+            for s in screens:
+                if _screen_id(s) == saved:
+                    return s
+            name = saved.rpartition("@")[0] if re.fullmatch(r".*@-?\d+,-?\d+", saved) else saved
+            for s in screens:
+                if s.name() == name:
                     return s
         return QApplication.primaryScreen()
 
@@ -754,20 +1236,24 @@ class BibleWidget(QWidget):
             self.move(target)
 
     def _animate_to(self, target: QPoint) -> None:
-        if self._snap_anim is not None:
-            self._snap_anim.stop()
-        anim = QPropertyAnimation(self, b"pos", self)
-        anim.setDuration(200)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.setStartValue(self.pos())
-        anim.setEndValue(target)
-        anim.start()
-        self._snap_anim = anim
+        if self._snap_anim is None:
+            self._snap_anim = QPropertyAnimation(self, b"pos", self)
+            self._snap_anim.setDuration(200)
+            self._snap_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._snap_anim.stop()
+        self._snap_anim.setStartValue(self.pos())
+        self._snap_anim.setEndValue(target)
+        self._snap_anim.start()
 
     def _set_passage(self, ref, text):
         """Show a passage. The verse label holds rich text for the line spacing,
         so the plain text is kept for copying and measuring."""
         self._verse_text = text
+        # Letter spacing pulls joined Arabic letters apart (and breaks ligatures such as الله)
+        self.verse_font.setLetterSpacing(QFont.AbsoluteSpacing, 0 if is_rtl(text) else 0.5)
+        self.ref_font.setLetterSpacing(QFont.AbsoluteSpacing, 0 if is_rtl(ref) else 1.5)
+        self.verse_label.setFont(self.verse_font)
+        self.ref_label.setFont(self.ref_font)
         self.ref_label.setText(ref)
         self.verse_label.setText(
             f'<div style="line-height: {VERSE_LINE_HEIGHT}%;">{html.escape(text)}</div>'
@@ -790,12 +1276,14 @@ class BibleWidget(QWidget):
         """Use the largest font that fits the card, down to MIN_VERSE_PT.
         Returns True if the text fits at the normal size. If it does not and allow_grow
         is set, the widget grows taller for this passage only."""
-        screen = self.screen() or QApplication.primaryScreen()
+        screen = self._screen_for_snap() or self.screen()
         if screen is None:
             return True
 
-        base_w, base_h = self._base_size
-        screen_height = screen.geometry().height()
+        # 20% x 30% of the screen the card is on (it may have moved to another, or changed)
+        geo = screen.geometry()
+        self._base_size = base_w, base_h = int(geo.width() * 0.2), int(geo.height() * 0.3)
+        screen_height = geo.height()
         base_size = max(14, min(60, screen_height // 30))
         total_len = len(self._verse_text) + len(self.ref_label.text())
         if total_len > 500:
@@ -821,23 +1309,56 @@ class BibleWidget(QWidget):
         available_h = base_h - chrome
 
         need = self._set_font_size(size, fw)
-        while need > available_h and size > MIN_VERSE_PT:
-            size -= 1
+        if need > available_h and size > MIN_VERSE_PT:
+            # The largest smaller size that fits (a smaller font never needs more room),
+            # found in a few layouts instead of one per point
+            best, lo, hi = MIN_VERSE_PT, MIN_VERSE_PT, size - 1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if self._set_font_size(mid, fw) <= available_h:
+                    best, lo = mid, mid + 1
+                else:
+                    hi = mid - 1
+            size = best
             need = self._set_font_size(size, fw)
         fits = need <= available_h
 
         if allow_grow:
             max_h = int(screen.availableGeometry().height() * 0.85)
+            card_w = base_w
+            if chrome + need > max_h:
+                # Even the smallest font is too tall for the screen (a long verse on a small
+                # screen): widen the card, up to half the screen, until the whole verse shows
+                max_w = max(base_w, int(screen.availableGeometry().width() * 0.5))
+                while chrome + need > max_h and card_w < max_w:
+                    card_w = min(max_w, card_w + max(20, base_w // 4))
+                    fw = max(50, card_w - margins.left() - margins.right())
+                    self.verse_label.setFixedWidth(fw)
+                    self.ref_label.setFixedWidth(fw)
+                    need = self._set_font_size(size, fw)
             target_h = base_h if fits else min(max_h, chrome + need)
-            if (self.width(), self.height()) != (base_w, target_h):
+            if (self.width(), self.height()) != (card_w, target_h):
                 self._resizing = True
-                self.resize(base_w, target_h)
+                self.resize(card_w, target_h)
                 self._resizing = False
                 if self.isVisible():
                     self._place()
             layout.activate()
             self.update()
         return fits
+
+    def _on_screens_changed(self, *_):
+        QTimer.singleShot(1000, self._refit)
+
+    def _refit(self):
+        """Size the card (and open prayers) for their screens again and put them back in place
+        (not mid-drag)."""
+        for window in self._prayer_windows:
+            window.refit()
+        if self._dragging:
+            return
+        self._fit_text_size()
+        self._place()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -874,11 +1395,12 @@ class BibleWidget(QWidget):
         screen = self._screen_at_center()
         if screen is None:
             return
-        self._snap_screen_name = screen.name() or ""
+        self._snap_screen_name = _screen_id(screen)
         if not self._snap_enabled:
             self._clamp_to_screen()
             self._free_pos = self.pos()
             self._save_snap_corner()
+            self._fit_text_size()  # sized for the screen it was dropped on
             return
         sg = screen.availableGeometry()
         center = self.frameGeometry().center()
@@ -886,6 +1408,7 @@ class BibleWidget(QWidget):
         top = center.y() - sg.y() < sg.height() / 2
         self._snap_corner = ("t" if top else "b") + ("l" if left else "r")
         self._save_snap_corner()
+        self._fit_text_size()  # sized for the screen it was dropped on
         self._snap_to_corner(self._snap_corner)
 
 
@@ -927,6 +1450,8 @@ class ColorSettingsDialog(QDialog):
         apply_btn = buttons.addButton(tr("Apply"), QDialogButtonBox.ApplyRole)
         ok_btn = buttons.addButton(QDialogButtonBox.Ok)
         cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        ok_btn.setText(tr("OK"))
+        cancel_btn.setText(tr("Cancel"))
         apply_btn.clicked.connect(self._on_apply)
         ok_btn.clicked.connect(self._on_ok)
         cancel_btn.clicked.connect(self.reject)
@@ -982,13 +1507,18 @@ class ColorSettingsDialog(QDialog):
 
 def _setup_logging():
     """Everything runs without a console, so errors go to widget.log."""
-    handler = RotatingFileHandler(
-        os.path.join(APP_DIR, "widget.log"), maxBytes=512 * 1024, backupCount=1, encoding="utf-8"
-    )
+    try:
+        handler = RotatingFileHandler(
+            os.path.join(APP_DIR, "widget.log"), maxBytes=512 * 1024, backupCount=1, encoding="utf-8"
+        )
+    except OSError:
+        handler = logging.NullHandler()  # read-only folder: run without a log file
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+
+    crash_log.install(APP_DIR)  # errors in other threads, fatal errors, Windows ending the app
 
     def excepthook(exc_type, exc, tb):
         log.error("Unhandled exception:\n%s", "".join(traceback.format_exception(exc_type, exc, tb)))
@@ -1010,6 +1540,12 @@ def _setup_logging():
     qInstallMessageHandler(qt_handler)
 
 
+def _screen_id(screen):
+    """A screen's name and place, which tell apart two monitors of the same model."""
+    geo = screen.geometry()
+    return f"{screen.name()}@{geo.x()},{geo.y()}"
+
+
 def _notify_running_instance(name):
     """If another widget is already running, ask it to show itself. Returns True if so."""
     socket = QLocalSocket()
@@ -1023,26 +1559,54 @@ def _notify_running_instance(name):
     return True
 
 
+def _claim_single_instance(server_name):
+    """Keep to one running copy per user: returns the held lock, or None if a copy is already
+    running (it is asked to show itself)."""
+    lock = QLockFile(os.path.join(QDir.tempPath(), server_name + ".lock"))
+    if not lock.tryLock(200):
+        if lock.error() == QLockFile.LockFailedError:
+            _notify_running_instance(server_name)
+            log.info("Already running; asked the existing widget to show itself")
+            return None
+        # The lock file can't be made (the temp folder is missing or read-only): the pipe check
+        # below still finds a running copy
+        log.warning("Could not create the lock file in %s (%s)", QDir.tempPath(), lock.error())
+    # Version 2.0.2 and older don't take the lock, only answer on the pipe: one may be running
+    if _notify_running_instance(server_name):
+        log.info("An older version is running; asked it to show itself")
+        lock.unlock()
+        return None
+    return lock
+
+
 def run_widget():
+    if "--install-update" in sys.argv:
+        # This exe is a newly downloaded version installing itself over the old one
+        sys.exit(updater.install_main(sys.argv))
+    if "--self-test" in sys.argv:
+        from selftest import run
+        sys.exit(run())
     _setup_logging()
     app = QApplication(sys.argv)
+    app.setWindowIcon(make_tray_icon(light_taskbar=False))  # dialogs and windows show the cross
     # The widget is a tool window; closing a dialog must not end the app
     app.setQuitOnLastWindowClosed(False)
 
     server_name = f"BibleWidget-{getpass.getuser()}"
-    if _notify_running_instance(server_name):
-        log.info("Already running; asked the existing widget to show itself")
+    lock = _claim_single_instance(server_name)
+    if lock is None:
         return
 
     QLocalServer.removeServer(server_name)
     server = QLocalServer()
     server.listen(server_name)
 
-    pid_path = os.path.join(APP_DIR, "widget.pid")
-    with open(pid_path, "w") as f:
-        f.write(str(os.getpid()))
-
-    log.info("Bible Widget starting (pid %s)", os.getpid())
+    log.info("Bible Widget starting (version %s, pid %s)", VERSION, os.getpid())
+    # How the last run ended, if it never quit; then widget.pid, kept up to date while running
+    crash_log.start_run()
+    heartbeat = QTimer(app)
+    heartbeat.timeout.connect(crash_log.heartbeat)
+    heartbeat.start(crash_log.HEARTBEAT_MS)
     widget = BibleWidget()
     widget.show()
 
@@ -1053,7 +1617,12 @@ def run_widget():
             widget._bring_back()
 
     server.newConnection.connect(on_connection)
-    sys.exit(app.exec())
+    # Once running: confirm to an installer that this new version started, and tidy up
+    QTimer.singleShot(0, updater.confirm_started)
+    QTimer.singleShot(30000, updater.clean_leftovers)
+    code = app.exec()
+    crash_log.end_run(f"the app's event loop ended (exit code {code})")
+    sys.exit(code)
 
 
 if __name__ == "__main__":

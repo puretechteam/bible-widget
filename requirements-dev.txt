@@ -1,0 +1,4 @@
+-r requirements.txt
+# The build ships exactly this Qt for Python (LICENSE and licenses/Qt-third-party.txt name it)
+PySide6==6.10.1
+pyinstaller==6.11.1

@@ -1,3 +1,95 @@
 <a href="https://github.com/puretechteam/bible-widget">Bible Widget</a> by <a href="https://github.com/puretechteam">Pure Tech</a> is marked <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0 Universal</a><img src="https://mirrors.creativecommons.org/presskit/icons/cc.svg" alt="" style="max-width: 1em;max-height:1em;margin-left: .2em;"><img src="https://mirrors.creativecommons.org/presskit/icons/zero.svg" alt="" style="max-width: 1em;max-height:1em;margin-left: .2em;">
 
-All Bible texts are public domain. JSON data sourced from [thiagobodruk/bible](https://github.com/thiagobodruk/bible) (CC0).
+The CC0 mark covers the app's own code, icons and menu text. It does not cover the Bible texts, the language names, or the software the download is built with, which keep their own terms, listed below. The prayers in `prayers/prayers.json` are passages from the Bibles below.
+
+## Bible texts
+
+Every Bible is recorded in `bibles/index.json` with its license, year and source, and the build refuses to include one that is not public domain or under CC BY-SA 4.0.
+
+Public domain: published before 1930 and old enough that the translators' rights have ended (or, for the Bible in Basic English, published without a copyright notice), with no one claiming rights to the text today (apart from the King James Version's printing patent in the United Kingdom, below).
+
+| File | Translation | Source |
+|---|---|---|
+| `ar_svd` | The Arabic Bible (Smith and Van Dyck, 1865) | thiagobodruk/bible |
+| `cs_kralicka` | Bible kralická (1613) | eBible.org `ces1613` |
+| `da_1871` | Danish Bible (Old Testament 1871, New Testament 1907) | CrossWire `DaOT1871NT1907` |
+| `nl_sv1917` | De Heilige Schrift (Statenvertaling, 1917 printing) | eBible.org `nld` |
+| `en_asv` | American Standard Version (1901) | scrollmapper/bible_databases |
+| `en_bbe` | Bible in Basic English (1965; public domain in the United States, where it was published without a copyright notice) | thiagobodruk/bible |
+| `en_darby` | Darby Translation (1890) | eBible.org `engDBY` |
+| `en_geneva` | Geneva Bible (1599, electronic edition by Mark Langley) | scrollmapper/bible_databases |
+| `en_kjv` | King James Version (1769; in the United Kingdom, the Crown holds a perpetual royal patent on printing it) | thiagobodruk/bible |
+| `en_webster` | Webster's Bible (1833) | scrollmapper/bible_databases |
+| `en_ylt` | Young's Literal Translation (1898) | scrollmapper/bible_databases |
+| `eo_esperanto` | La Sankta Biblio (Old Testament by L. L. Zamenhof; 1926) | thiagobodruk/bible |
+| `fi_finnish` | Biblia (1776) | thiagobodruk/bible |
+| `fr_lsg` | Louis Segond (1910) | eBible.org `fraLSG` |
+| `de_luther` | Lutherbibel (1912) | eBible.org `deu1912` |
+| `el_greek` | Greek Bible (Neophytos Vamvas, 1850) | thiagobodruk/bible |
+| `he_delitzsch` | Hebrew Old Testament with the New Testament of Franz Delitzsch (1877) | eBible.org `heb` |
+| `hu_karoli` | Károli Biblia (1908 revision) | CrossWire `HunKar` |
+| `it_riveduta` | Riveduta (Giovanni Luzzi, 1927) | eBible.org `ita1927` |
+| `ja_bungo` | Bungo-yaku (Old Testament 1887, New Testament 1917) | CrossWire `JapBungo` |
+| `la_vulgate` | Clementine Vulgate (1598; the 7 deuterocanonical books are not included) | eBible.org `latVUC` |
+| `fa_opv` | Old Persian Version (1895) | eBible.org `pesOPV` |
+| `pl_gdanska` | Biblia Gdańska (1881) | CrossWire `PolGdanska` |
+| `pt_almeida` | Almeida (1911) | CrossWire `PorAlmeida1911` |
+| `ru_synodal` | Synodal Translation (1876) | thiagobodruk/bible |
+| `es_rvr` | Reina-Valera (1909) | thiagobodruk/bible |
+| `sv_1917` | Bibeln (1917) | CrossWire `Swe1917` |
+| `tl_angbiblia` | Ang Biblia (1905) | CrossWire `TagAngBiblia` |
+| `uk_kulish` | Kulish, Puluj and Nechuy-Levytsky Bible (1905) | eBible.org `ukr1871` |
+| `vi_vietnamese` | Vietnamese Bible (William Cadman and others; New Testament 1923, Old Testament 1925) | thiagobodruk/bible |
+
+Corrections: where a source file had lost verses, merged them into the verse before, or run words together, the files were repaired from other public domain copies of the same editions: eBible.org (`eng-asv`, `enggnv`, `engWycliffe`, `vie1934`, `arb-vd`, `ces1613`, `pesOPV`), CrossWire (`Geneva1599`, `FinBiblia`, `Viet`, `HebDelitzsch`, `FarOPV`), the Danish Bible's own source files (https://github.com/emg/Danish-Bible-OT-1871 and https://github.com/emg/Danish-Bible-NT-1907), the Károli Biblia's (https://github.com/krisek/HunKar, with three lost verses from https://github.com/gabordobrei/karoli-biblia-citatumokkal) and a second copy of the Biblia Gdańska (https://github.com/adampaulukanis/gdanska). Typing errors such as a digit for a letter, stray signs and missing spaces were corrected by hand.
+
+Under the Creative Commons Attribution-ShareAlike 4.0 license (https://creativecommons.org/licenses/by-sa/4.0/):
+
+| File | Translation and copyright | Source |
+|---|---|---|
+| `hi_irv` | Indian Revised Version, Hindi. © 2017, 2018, 2019 Bridge Connectivity Solutions | eBible.org `hin2017` |
+| `ta_irv` | Indian Revised Version, Tamil. © 2017, 2019 Bridge Connectivity Solutions | eBible.org `tam2017` |
+| `sw_ulb` | Swahili Unlocked Literal Bible. © 2019 Door43 World Missions Community | eBible.org `swhulb` |
+| `en_wycliffe` | Wycliffe Bible (c. 1395). The translation is public domain; this transcription is by the contributors of Wikisource (https://en.wikisource.org/wiki/Bible_(Wycliffe)), from the Wesley Center Online, from the transcription by Fedosov | CrossWire `Wycliffe` |
+
+These four were converted to JSON for the app, which leaves out their cross references and editing marks. The converted files are shared under CC BY-SA 4.0 as well.
+
+Sources: eBible.org (https://ebible.org), the CrossWire Bible Society (https://crosswire.org), thiagobodruk/bible (https://github.com/thiagobodruk/bible) and scrollmapper/bible_databases (https://github.com/scrollmapper/bible_databases). The files from the last two keep their MIT notice:
+
+    MIT License
+
+    Copyright (c) 2024 Thiago Bodruk
+    Copyright (c) 2024 Scrollmapper
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+## Menu text
+
+- Language names come from the Unicode Common Locale Data Repository (CLDR 49), © Unicode, Inc., under the Unicode License v3: `licenses/Unicode-3.0.txt`.
+- OK, Cancel, Apply, Close and Reset to Defaults use Qt's own translations, which are part of Qt (below).
+- Bible book names in the menus come from the book name lists of these Bibles' sources (eBible.org, CrossWire and thiagobodruk/bible).
+- The rest of the menu text in languages other than English is machine translated. Corrections are welcome: https://github.com/puretechteam/bible-widget/issues
+
+## Software in the download
+
+The download (`BibleWidget-<version>-win64.zip`) is built from:
+
+- Python 3.13, under the Python Software Foundation License, with the libraries it lists (libffi among them): `licenses/Python.txt`.
+- Qt 6.10 and Qt for Python (PySide6 and Shiboken6 6.10.1), under the GNU Lesser General Public License v3, which builds on the GNU General Public License v3: `licenses/LGPL-3.0.txt` and `licenses/GPL-3.0.txt`. They are used unchanged. Qt's libraries sit in the download's `_internal` folder; PySide6's Python part is packed into `BibleWidget.exe`. To use your own build of them, rebuild the download from this app's source code (https://github.com/puretechteam/bible-widget, with `build.py`). Their source code is at https://download.qt.io/official_releases/qt/6.10/ and https://download.qt.io/official_releases/QtForPython/pyside6/. The third-party code inside Qt (HarfBuzz, FreeType, libpng, PCRE2, zlib and others) is listed with its licenses in `licenses/Qt-third-party.txt`.
+- The Microsoft Visual C++ runtime, redistributed under Microsoft's terms for it.
